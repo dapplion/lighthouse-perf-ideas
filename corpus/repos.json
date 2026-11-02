@@ -1,0 +1,12 @@
+[
+  {"name": "lighthouse", "gh": "sigp/lighthouse",                 "branch": "unstable", "lang": "rust"},
+  {"name": "prysm",      "gh": "OffchainLabs/prysm",              "branch": "develop",  "lang": "go"},
+  {"name": "teku",       "gh": "Consensys-Incorporated/teku",     "branch": "master",   "lang": "java"},
+  {"name": "nimbus",     "gh": "status-im/nimbus-eth2",           "branch": "unstable", "lang": "nim"},
+  {"name": "lodestar",   "gh": "ChainSafe/lodestar",              "branch": "unstable", "lang": "typescript"},
+  {"name": "grandine",   "gh": "grandinetech/grandine",           "branch": "develop",  "lang": "rust"},
+  {"name": "silver",     "gh": "gattaca-com/silver",              "branch": "main",     "lang": "rust"},
+  {"name": "ethlambda",  "gh": "lambdaclass/ethlambda",           "branch": "main",     "lang": "rust", "note": "lean consensus client"},
+  {"name": "caplin",     "gh": "erigontech/erigon",               "branch": "main",     "lang": "go", "paths": ["cl"],
+   "prs": "from-commits", "note": "Erigon's embedded CL; PRs limited to those referenced by commits touching cl/"}
+]

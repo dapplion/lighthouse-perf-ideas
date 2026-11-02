@@ -6,9 +6,9 @@ Inputs (all under PERF_DATA), applied in this order, a later pass overriding an 
   ideas/*.jsonl          the clustered ideas
   match-out/             new ideas and new members from match.js
   screen-out/*.jsonl     prescreen: applicable, value guess from the title
-  check-out/, check2-out/, check3-out/  first check against Lighthouse (lh-check.js, recheck.js)
-  refute-out/, refute2-out/, refute3-out/  second agent trying to disprove not/partial
-  impl-out/              skeptic trying to disprove implemented (recheck.js)
+  check*-out/            first check against Lighthouse (lh-check.js, recheck.js)
+  refute*-out/           second agent trying to disprove not/partial
+  impl*-out/             skeptic trying to disprove implemented (recheck.js)
 Each row keeps `history`: the verdict of every pass that judged it, in order."""
 import collections, glob, json, os
 
@@ -30,6 +30,14 @@ def rows(pattern):
     return out
 
 
+def passes(name):
+    """<name>-out/, then <name>2-out/, <name>3-out/, ...: a later run of a pass overrides an earlier one."""
+    out = {}
+    for d in sorted(glob.glob(f"{D}/{name}*-out")):
+        out.update(rows(os.path.basename(d) + "/*.jsonl"))
+    return out
+
+
 ideas = rows("ideas/*.jsonl")
 # match.js output: new ideas, and new members for existing ideas
 for cid, i in rows("match-out/*.new.jsonl").items():
@@ -48,9 +56,9 @@ for f in sorted(glob.glob(f"{D}/match-out/*.jsonl")):
                 if repo == "lighthouse":
                     i["lighthouse_members"] = (i.get("lighthouse_members") or []) + [m["id"]]
 screen = rows("screen-out/*.jsonl")
-check = {**rows("check-out/*.jsonl"), **rows("check2-out/*.jsonl"), **rows("check3-out/*.jsonl")}
-refute = {**rows("refute-out/*.jsonl"), **rows("refute2-out/*.jsonl"), **rows("refute3-out/*.jsonl")}
-skeptic = rows("impl-out/*.jsonl")
+check = passes("check")
+refute = passes("refute")
+skeptic = passes("impl")
 VALUES = ("high", "medium", "low")
 
 out = []

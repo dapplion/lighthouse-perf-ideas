@@ -17,13 +17,20 @@ by = collections.defaultdict(list)
 for r in recs.values():
     by[r.get("component") or "other"].append(r)
 
+# existing ideas per component, by cid prefix (ideas/zz_lost.jsonl holds the beacon_api-L ideas)
+existing = collections.defaultdict(list)
+for f in sorted(glob.glob(f"{D}/ideas/*.jsonl")) + sorted(glob.glob(f"{D}/match-out/*.new.jsonl")):
+    for l in open(f):
+        if l.strip():
+            i = json.loads(l)
+            existing[i["cid"].rsplit("-", 1)[0]].append(i)
+
 os.makedirs(f"{D}/match-in", exist_ok=True)
 plan = []
 for comp, rs in sorted(by.items()):
     rs.sort(key=lambda r: (r.get("mechanism") or "", r["id"]))
     with open(f"{D}/match-in/{comp}.ideas.jsonl", "w") as f:
-        for l in open(f"{D}/ideas/{comp}.jsonl") if os.path.exists(f"{D}/ideas/{comp}.jsonl") else []:
-            i = json.loads(l)
+        for i in existing[comp]:
             f.write(json.dumps({k: i.get(k) for k in ("cid", "title", "idea", "mechanism")}) + "\n")
     files = []
     for k in range(0, len(rs), 120):

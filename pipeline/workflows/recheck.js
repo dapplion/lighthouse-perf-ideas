@@ -11,6 +11,7 @@ const ROOT = args.root  // the directory that holds data/derived/
 const LH = args.lh  // the Lighthouse checkout to check against
 const pad = (i) => String(i).padStart(3, '0')
 const T = args.tag || '2'  // check<T>-in -> check<T>-out, refute<T>-out
+const I = args.impl_tag || ''  // impl<I>-in -> impl<I>-out
 const V = { type: 'object', properties: { items: { type: 'array', items: { type: 'object', properties: {
   cid: { type: 'string' }, verdict: { type: 'string', enum: ['implemented', 'partial', 'not', 'n/a'] }, value: { type: 'string' } },
   required: ['cid', 'verdict', 'value'] } } }, required: ['items'] }
@@ -31,7 +32,7 @@ Also rate value after reading the code: "high" (a clear gain on every mainnet no
 
 Write one JSON line per idea to ${out} (Write tool) with: cid, verdict, value, evidence (list of "path:line" in ${LH} or crate source, with a few words each; for "not", the places you looked and what the code does instead), gap (for partial/not: what Lighthouse would have to change, 1-3 sentences, naming the functions), effort ("S" under a day, "M" days, "L" weeks or a redesign), impact (1-2 sentences: what would get cheaper on a mainnet node, and roughly by how much if you can tell), confidence ("high" if you read the relevant code, "low" otherwise).
 
-The output must have exactly one line per input line. Return items: cid, verdict, value for each idea.`
+The output must have exactly one line per input line. Write the whole file in one Write call at the end: a second Write call replaces the first. Return items: cid, verdict, value for each idea.`
 
 const refutePrompt = (rows, file, inp, out) => `${CTX}
 
@@ -49,11 +50,11 @@ Your job is to refute "implemented". For each idea, open the code the earlier ev
 
 For each idea write one JSON line to ${out} (Write tool) with: cid, final_verdict (implemented | partial | not | n/a), changed (true if not "implemented"), value (high/medium/low, your rating), evidence (path:line list supporting the final verdict), gap (for partial/not: what is missing, naming the functions), effort (S/M/L), impact, confidence (high/low), note (1-2 sentences: what you verified, and where the earlier evidence was right or wrong).
 
-The output must have exactly one line per input line. Return items: cid, verdict (= final_verdict), value.`
+The output must have exactly one line per input line. Write the whole file in one Write call at the end: a second Write call replaces the first. Return items: cid, verdict (= final_verdict), value.`
 
 const D = `${ROOT}/data/derived`
 const checks = pipeline(
-  Array.from({ length: args.check_n }, (_, i) => i),
+  args.check_idx || Array.from({ length: args.check_n }, (_, i) => i),
   (i) => agent(checkPrompt(`${D}/check${T}-in/u${pad(i)}.jsonl`, `${D}/check${T}-out/u${pad(i)}.jsonl`), { label: `check:u${i}`, phase: 'Check', schema: V, model: 'sonnet' }),
   async (chk, i) => {
     if (!chk) return { kind: 'check', i, error: 'check failed' }
@@ -65,8 +66,8 @@ const checks = pipeline(
   },
 )
 const skeptic = pipeline(
-  Array.from({ length: args.impl_n || 0 }, (_, i) => i),
-  (i) => agent(skepticPrompt(`${D}/impl-in/i${pad(i)}.jsonl`, `${D}/impl-out/i${pad(i)}.jsonl`), { label: `skeptic:i${i}`, phase: 'Skeptic', schema: V })
+  args.impl_idx || Array.from({ length: args.impl_n || 0 }, (_, i) => i),
+  (i) => agent(skepticPrompt(`${D}/impl${I}-in/i${pad(i)}.jsonl`, `${D}/impl${I}-out/i${pad(i)}.jsonl`), { label: `skeptic:i${i}`, phase: 'Skeptic', schema: V })
     .then(r => r ? { kind: 'skeptic', i, items: r.items } : { kind: 'skeptic', i, error: 'skeptic failed' }),
 )
 const [c, s] = await Promise.all([checks, skeptic])

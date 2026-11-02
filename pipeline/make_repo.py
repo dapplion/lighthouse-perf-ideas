@@ -178,17 +178,19 @@ for r in REPOS:
              f"| [#{npr}](https://github.com/{r['gh']}/pull/{npr}) | {nprs:,} "
              f"| [`{head_sha[:10]}`](https://github.com/{r['gh']}/commit/{head_sha}) ({(date or '')[:10]}) | {ncommits:,} | {meta.get((n, 'last_update'), '')[:10]} |")
 L += ["", "The full registry is in `corpus/data/` (every PR and commit as JSONL) and `registry.csv` (how far each item got in the pipeline, and its idea id).", ""]
-L += ["## Totals", "", "Verdict by value:", "", "| verdict | high | medium | low | unrated | total |", "|---|---|---|---|---|---|"]
-for v in VERDICTS:
-    row = [sum(1 for i in ideas if i["verdict"] == v and i["value"] == x) for x in VALUES]
+shown_v = [v for v in VERDICTS if any(i["verdict"] == v for i in ideas)]
+shown_x = [x for x in VALUES if any(i["value"] == x for i in ideas)]
+L += ["## Totals", "", "Verdict by value:", "", "| verdict | " + " | ".join(shown_x) + " | total |", "|---" * (len(shown_x) + 2) + "|"]
+for v in shown_v:
+    row = [sum(1 for i in ideas if i["verdict"] == v and i["value"] == x) for x in shown_x]
     L.append(f"| {v} | " + " | ".join(map(str, row)) + f" | {sum(row)} |")
-L.append("| **total** | " + " | ".join(str(sum(1 for i in ideas if i["value"] == x)) for x in VALUES) + f" | {len(ideas)} |")
+L.append("| **total** | " + " | ".join(str(sum(1 for i in ideas if i["value"] == x)) for x in shown_x) + f" | {len(ideas)} |")
 L += ["", "By area, sorted by actionable count. The area is the prefix of the idea id.", "",
-      "| area | ideas | actionable | not | partial | implemented | n/a | unchecked |", "|---|---|---|---|---|---|---|---|"]
+      "| area | ideas | actionable | " + " | ".join(shown_v) + " |", "|---" * (len(shown_v) + 3) + "|"]
 for a in areas:
     g = by_area[a]
     c = collections.Counter(i["verdict"] for i in g)
-    L.append(f"| [{a}](areas/{a}.md) | {len(g)} | {sum(map(actionable, g))} | " + " | ".join(str(c[v]) for v in VERDICTS) + " |")
+    L.append(f"| [{a}](areas/{a}.md) | {len(g)} | {sum(map(actionable, g))} | " + " | ".join(str(c[v]) for v in shown_v) + " |")
 L += ["", "Ideas by the client whose PRs or commits produced them (an idea can come from several clients):", "",
       "| client | ideas | actionable |", "|---|---|---|"]
 cc = collections.Counter(c for i in ideas for c in set(i.get("clients") or []))
@@ -200,12 +202,12 @@ open(os.path.join(out, "README.md"), "w").write("\n".join(L) + "\n")
 
 with open(os.path.join(out, "ideas.csv"), "w", newline="") as f:
     w = csv.writer(f)
-    w.writerow(["id", "area", "verdict", "value", "effort", "actionable", "resources", "clients", "title", "gap", "sources"])
+    # GitHub shows a CSV as a table only below about 512 KB, so the gap text stays in areas/ and ideas.jsonl.
+    w.writerow(["id", "verdict", "value", "effort", "actionable", "resources", "clients", "title", "sources"])
     for i in sorted(ideas, key=lambda i: (not actionable(i), rank[i["value"]], vrank[i["verdict"]], i["cid"])):
-        gap = plain(i.get("gap") or "")
-        w.writerow([i["cid"], area(i), i["verdict"], i["value"], i.get("effort") or "", "yes" if actionable(i) else "",
+        w.writerow([i["cid"], i["verdict"], i["value"], i.get("effort") or "", "yes" if actionable(i) else "",
                     " ".join(i.get("resources") or []), " ".join(sorted(set(i.get("clients") or []))), i["title"],
-                    gap if len(gap) <= 220 else gap[:217] + "...", " ".join(src_url(m)[0] for m in i.get("members") or [])])
+                    " ".join(src_url(m)[0] for m in (i.get("members") or [])[:3]) + (f" +{len(i['members']) - 3}" if len(i.get("members") or []) > 3 else "")])
 
 KEEP = ["cid", "title", "idea", "verdict", "first_verdict", "value", "effort", "confidence", "resources", "clients",
         "members", "lighthouse_members", "landed_somewhere", "measured_best", "evidence", "gap", "impact", "refute_note"]

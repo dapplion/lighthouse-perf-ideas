@@ -1,6 +1,6 @@
 # Consensus client performance ideas
 
-A study of the performance work in the PR and commit history of 9 Ethereum consensus clients: Prysm, Teku, Lodestar, Nimbus, Lighthouse, Grandine, Caplin (Erigon), Silver and ethlambda. The history yields 1,563 distinct performance ideas. Each one was checked against Lighthouse [`unstable` @ `928b61e719`](https://github.com/sigp/lighthouse/tree/928b61e719c39f7fe8c074767b594fb99f4379bd) (2026-10-30). Built 2026-11-02.
+A study of the performance work in the PR and commit history of 9 Ethereum consensus clients: Prysm, Teku, Lodestar, Nimbus, Lighthouse, Grandine, Caplin (Erigon), Silver and ethlambda. The history yields 3,917 distinct performance ideas. Each one was checked against Lighthouse [`unstable` @ `928b61e719`](https://github.com/sigp/lighthouse/tree/928b61e719c39f7fe8c074767b594fb99f4379bd) (2026-10-30). Built 2026-11-02.
 
 Files:
 
@@ -15,10 +15,12 @@ Files:
 ## How the list was made
 
 1. **Corpus.** The full PR and commit histories of the 9 clients: about 49k PRs and 48k commits. For Erigon, only the commits that touch `cl/` and the PRs they reference are included.
-2. **Triage.** An LLM read 56.8k items, after bot PRs and dependency bumps were removed. 2,977 items that matched perf keywords were always sent on. 6.4k perf records came out.
-3. **Clustering.** The records were merged into 3,675 distinct ideas.
-4. **Prescreen.** An idea was kept when it applies to Lighthouse and has high or medium value, has 3 or more sources, or has a measured result. 1,563 ideas were kept.
-5. **Check.** For each idea, an agent read the Lighthouse code and gave a verdict with file and line evidence. Every `not` or `partial` verdict on a high or medium idea then went to a second agent that was told to disprove it. That pass changed 73 of 337 verdicts.
+2. **Triage.** An LLM read 56.8k items, after bot PRs and dependency bumps were removed, from the title and the start of the body. 2,977 items that matched perf keywords were always sent on.
+3. **Second triage.** The 43,094 items that the first triage rejected were read again with up to 1,200 characters of body and the changed files. 2,916 were sent on, and 733 of them turned out to be performance changes. Every decision of this pass is saved with a reason in `registry.csv`.
+4. **Extraction.** An agent read each item that was sent on in full (with the diff when the text was thin) and wrote a performance record. 7,182 records came out.
+5. **Clustering.** The first 6,449 records were merged into 3,675 distinct ideas. The 733 records of the second triage were then matched to those ideas: 450 joined an existing idea, and 283 formed 242 new ideas with new ids.
+6. **Check.** For every idea, an agent read the Lighthouse code and gave a verdict with file and line evidence, and rated the value.
+7. **Second checks.** Every `not` or `partial` verdict on a high or medium idea went to a second agent that was told to disprove it: 360 ideas, 75 verdicts changed. Every `implemented` verdict went to a skeptic that was told to find where Lighthouse does not do it: 1,842 ideas, 159 verdicts changed (150 to `partial`).
 
 ## How to read it
 
@@ -40,10 +42,10 @@ These come from joining the actionable ideas with measurements: Lighthouse metri
 
 | # | Proposal | Expected gain | Open PR | Ideas |
 |---|---|---|---|---|
-| 1 | Batch gossip unaggregated attestations (fire at 8-16 queued or 10 ms) and group signature sets by signing root | about −1.7 cores on a node that subscribes to all subnets | [#9641](https://github.com/sigp/lighthouse/pull/9641), [#9521](https://github.com/sigp/lighthouse/pull/9521) | [attestation_processing-123](areas/attestation_processing.md#attestation_processing-123), -006, -007, bls-012, -017 |
+| 1 | Batch gossip unaggregated attestations (fire at 8-16 queued or 10 ms) and group signature sets by signing root | about −1.7 cores on a node that subscribes to all subnets | [#9641](https://github.com/sigp/lighthouse/pull/9641), [#9521](https://github.com/sigp/lighthouse/pull/9521) | [attestation_processing-123](areas/attestation_processing.md#attestation_processing-123), -006, -007, [bls-012](areas/bls.md#bls-012), -017 |
 | 2 | glibc `M_MMAP_THRESHOLD`=128 KiB (optionally `M_ARENA_MAX`=4) alongside jemalloc | about −1 to −1.5 GB RSS after 2 weeks of uptime | | [allocator_runtime-027](areas/allocator_runtime.md#allocator_runtime-027), -028 |
 | 3 | Hot hdiff buffer cache from 1 to 2 entries; do not clone a buffer the cache rejects | −0.7 s on the epoch-boundary import | | [db_hot-020](areas/db_hot.md#db_hot-020), -039, [state_cache-187](areas/state_cache.md#state_cache-187), -225 |
-| 4 | Cold hdiff cache keeps only the live base buffers (interim: `--hdiff-buffer-cache-size 6`) | −3.5 to −4.6 GB on archive nodes (cache model) | | db_cold-049 |
+| 4 | Cold hdiff cache keeps only the live base buffers (interim: `--hdiff-buffer-cache-size 6`) | −3.5 to −4.6 GB on archive nodes (cache model) | | [db_cold-049](areas/db_cold.md#db_cold-049) |
 | 5 | Serve post-Fulu next-epoch proposer duties from `beacon_proposer_cache` | `process_epoch` runs per epoch 5.2 → ~1.6 | [#10459](https://github.com/sigp/lighthouse/pull/10459) | [beacon_api-004](areas/beacon_api.md#beacon_api-004) |
 | 6 | Batch-affine pubkey addition for signature sets of 64+ keys | −12 ms per block | | [bls-064](areas/bls.md#bls-064), [block_import-097](areas/block_import.md#block_import-097) |
 | 7 | Linear `compute_on_chain_aggregate`, plus a timer | −110 to −130 ms of the 200 ms attestation packing | | [op_pool-019](areas/op_pool.md#op_pool-019), -018 |
@@ -53,7 +55,7 @@ These come from joining the actionable ideas with measurements: Lighthouse metri
 | 11 | Sparse-then-dense update map for `balances` in milhouse | −12 ms per block | | [state_transition-001](areas/state_transition.md#state_transition-001) |
 | 12 | 8-pair block swap in `shuffle_list` | −20 ms per shuffle (measured in a bench) | | [epoch_processing-086](areas/epoch_processing.md#epoch_processing-086) |
 | 13 | Split the parallel tree hash only where both children are dirty | −10 ms CPU per block | | [tree_hash-065](areas/tree_hash.md#tree_hash-065) |
-| 14 | Hash the transactions once; pass the payload header through `ConsensusContext` | −3.4 to −7.6 ms per block | | tree_hash-028 |
+| 14 | Hash the transactions once; pass the payload header through `ConsensusContext` | −3.4 to −7.6 ms per block | | [tree_hash-028](areas/tree_hash.md#tree_hash-028) |
 | 15 | Collect the E+1 active indices once for the lookahead and the next committee cache | −48 to −95 ms per epoch boundary | | [epoch_processing-091](areas/epoch_processing.md#epoch_processing-091), -088 |
 | 16 | Batch the released unknown-block attestations | 4.3× faster drain of the reprocess queue | | [attestation_processing-011](areas/attestation_processing.md#attestation_processing-011), -009, -104 |
 | 17 | milhouse `HashCell` in place of `RwLock<Hash256>` | −3 to −6 ms CPU per block | [milhouse#98](https://github.com/sigp/milhouse/pull/98) | |
@@ -88,86 +90,83 @@ The full registry is in `corpus/data/` (every PR and commit as JSONL) and `regis
 
 Verdict by value:
 
-| verdict | high | medium | low | unrated | total |
-|---|---|---|---|---|---|
-| not | 7 | 135 | 95 | 0 | 237 |
-| partial | 9 | 163 | 102 | 0 | 274 |
-| implemented | 49 | 484 | 378 | 0 | 911 |
-| n/a | 3 | 64 | 74 | 0 | 141 |
-| unchecked | 0 | 0 | 0 | 0 | 0 |
-| **total** | 68 | 846 | 649 | 0 | 1563 |
+| verdict | high | medium | low | total |
+|---|---|---|---|---|
+| not | 8 | 145 | 333 | 486 |
+| partial | 12 | 200 | 401 | 613 |
+| implemented | 53 | 361 | 1270 | 1684 |
+| n/a | 3 | 64 | 1067 | 1134 |
+| **total** | 76 | 770 | 3071 | 3917 |
 
 By area, sorted by actionable count. The area is the prefix of the idea id.
 
-| area | ideas | actionable | not | partial | implemented | n/a | unchecked |
-|---|---|---|---|---|---|---|---|
-| [beacon_api](areas/beacon_api.md) | 129 | 29 | 20 | 25 | 78 | 6 | 0 |
-| [data_availability](areas/data_availability.md) | 97 | 28 | 17 | 18 | 55 | 7 | 0 |
-| [gossip_validation](areas/gossip_validation.md) | 68 | 23 | 11 | 16 | 39 | 2 | 0 |
-| [block_import](areas/block_import.md) | 77 | 21 | 9 | 14 | 49 | 5 | 0 |
-| [db_cold](areas/db_cold.md) | 75 | 18 | 13 | 10 | 40 | 12 | 0 |
-| [db_hot](areas/db_hot.md) | 69 | 18 | 12 | 15 | 32 | 10 | 0 |
-| [state_cache](areas/state_cache.md) | 124 | 17 | 11 | 12 | 79 | 22 | 0 |
-| [attestation_processing](areas/attestation_processing.md) | 63 | 16 | 13 | 9 | 38 | 3 | 0 |
-| [range_sync](areas/range_sync.md) | 58 | 16 | 11 | 12 | 32 | 3 | 0 |
-| [el_interaction](areas/el_interaction.md) | 41 | 15 | 7 | 10 | 20 | 4 | 0 |
-| [gossipsub](areas/gossipsub.md) | 55 | 12 | 12 | 8 | 33 | 2 | 0 |
-| [block_production](areas/block_production.md) | 55 | 11 | 11 | 6 | 34 | 4 | 0 |
-| [rpc](areas/rpc.md) | 45 | 10 | 7 | 10 | 26 | 2 | 0 |
-| [bls](areas/bls.md) | 40 | 9 | 11 | 4 | 22 | 3 | 0 |
-| [lookup_sync](areas/lookup_sync.md) | 17 | 7 | 2 | 5 | 10 | 0 | 0 |
-| [op_pool](areas/op_pool.md) | 39 | 7 | 4 | 10 | 22 | 3 | 0 |
-| [other_caches](areas/other_caches.md) | 38 | 7 | 7 | 8 | 20 | 3 | 0 |
-| [fork_choice](areas/fork_choice.md) | 63 | 6 | 5 | 9 | 41 | 8 | 0 |
-| [tree_hash](areas/tree_hash.md) | 41 | 6 | 9 | 4 | 25 | 3 | 0 |
-| [discovery_peers](areas/discovery_peers.md) | 40 | 5 | 5 | 7 | 26 | 2 | 0 |
-| [logging_metrics](areas/logging_metrics.md) | 21 | 5 | 2 | 9 | 9 | 1 | 0 |
-| [allocator_runtime](areas/allocator_runtime.md) | 18 | 4 | 2 | 6 | 7 | 3 | 0 |
-| [kzg](areas/kzg.md) | 25 | 4 | 5 | 2 | 17 | 1 | 0 |
-| [ssz](areas/ssz.md) | 23 | 4 | 4 | 6 | 8 | 5 | 0 |
-| [validator_client](areas/validator_client.md) | 49 | 4 | 8 | 10 | 27 | 4 | 0 |
-| [backfill](areas/backfill.md) | 14 | 3 | 2 | 1 | 11 | 0 | 0 |
-| [epoch_processing](areas/epoch_processing.md) | 62 | 3 | 7 | 10 | 41 | 4 | 0 |
-| [state_transition](areas/state_transition.md) | 68 | 3 | 5 | 9 | 44 | 10 | 0 |
-| [build](areas/build.md) | 22 | 2 | 3 | 6 | 9 | 4 | 0 |
-| [other](areas/other.md) | 22 | 1 | 2 | 3 | 12 | 5 | 0 |
-| [startup](areas/startup.md) | 5 | 0 | 0 | 0 | 5 | 0 | 0 |
+| area | ideas | actionable | not | partial | implemented | n/a |
+|---|---|---|---|---|---|---|
+| [beacon_api](areas/beacon_api.md) | 305 | 35 | 34 | 66 | 148 | 57 |
+| [data_availability](areas/data_availability.md) | 175 | 30 | 27 | 35 | 81 | 32 |
+| [gossip_validation](areas/gossip_validation.md) | 157 | 25 | 27 | 23 | 80 | 27 |
+| [block_import](areas/block_import.md) | 158 | 23 | 16 | 21 | 81 | 40 |
+| [db_hot](areas/db_hot.md) | 164 | 21 | 20 | 24 | 57 | 63 |
+| [db_cold](areas/db_cold.md) | 183 | 20 | 34 | 24 | 63 | 62 |
+| [state_cache](areas/state_cache.md) | 249 | 19 | 20 | 29 | 119 | 81 |
+| [el_interaction](areas/el_interaction.md) | 158 | 18 | 14 | 25 | 28 | 91 |
+| [range_sync](areas/range_sync.md) | 146 | 18 | 20 | 26 | 68 | 32 |
+| [attestation_processing](areas/attestation_processing.md) | 130 | 17 | 18 | 22 | 66 | 24 |
+| [bls](areas/bls.md) | 103 | 15 | 18 | 12 | 40 | 33 |
+| [block_production](areas/block_production.md) | 147 | 13 | 19 | 15 | 73 | 40 |
+| [gossipsub](areas/gossipsub.md) | 138 | 13 | 27 | 17 | 62 | 32 |
+| [rpc](areas/rpc.md) | 102 | 11 | 15 | 17 | 47 | 23 |
+| [op_pool](areas/op_pool.md) | 96 | 9 | 9 | 23 | 43 | 21 |
+| [tree_hash](areas/tree_hash.md) | 90 | 9 | 14 | 12 | 43 | 21 |
+| [other_caches](areas/other_caches.md) | 123 | 8 | 13 | 20 | 44 | 46 |
+| [fork_choice](areas/fork_choice.md) | 163 | 7 | 16 | 19 | 81 | 47 |
+| [lookup_sync](areas/lookup_sync.md) | 56 | 7 | 11 | 14 | 25 | 6 |
+| [kzg](areas/kzg.md) | 43 | 6 | 7 | 7 | 22 | 7 |
+| [logging_metrics](areas/logging_metrics.md) | 58 | 6 | 7 | 15 | 19 | 17 |
+| [validator_client](areas/validator_client.md) | 186 | 6 | 23 | 26 | 77 | 60 |
+| [discovery_peers](areas/discovery_peers.md) | 104 | 5 | 12 | 18 | 56 | 18 |
+| [ssz](areas/ssz.md) | 92 | 5 | 13 | 14 | 27 | 38 |
+| [state_transition](areas/state_transition.md) | 174 | 5 | 14 | 27 | 79 | 54 |
+| [allocator_runtime](areas/allocator_runtime.md) | 79 | 4 | 7 | 16 | 18 | 38 |
+| [epoch_processing](areas/epoch_processing.md) | 112 | 4 | 9 | 17 | 56 | 30 |
+| [backfill](areas/backfill.md) | 41 | 3 | 4 | 7 | 20 | 10 |
+| [build](areas/build.md) | 59 | 2 | 7 | 10 | 18 | 24 |
+| [other](areas/other.md) | 118 | 1 | 11 | 11 | 38 | 58 |
+| [startup](areas/startup.md) | 8 | 0 | 0 | 1 | 5 | 2 |
 
 Ideas by the client whose PRs or commits produced them (an idea can come from several clients):
 
 | client | ideas | actionable |
 |---|---|---|
-| prysm | 604 | 97 |
-| lodestar | 460 | 80 |
-| lighthouse | 412 | 57 |
-| teku | 371 | 82 |
-| nimbus | 363 | 78 |
-| caplin | 154 | 31 |
-| grandine | 128 | 35 |
-| ethlambda | 64 | 14 |
-| silver | 59 | 19 |
+| prysm | 1240 | 122 |
+| lodestar | 978 | 102 |
+| lighthouse | 799 | 85 |
+| teku | 766 | 102 |
+| nimbus | 741 | 88 |
+| caplin | 324 | 38 |
+| grandine | 255 | 49 |
+| silver | 124 | 23 |
+| ethlambda | 113 | 18 |
 
 ## Limits
 
-- **Triage recall.** A sample of 400 rejected items had 1 minor perf miss, but only 17 of the 400 were read in full. Expect some ideas to be missing.
-- **Verdicts.** No one re-read the 911 `implemented` verdicts after the first check. 2,112 more ideas, most of them low value, were never checked against Lighthouse.
+- **Triage.** 39,960 items were rejected by both triage passes. The second pass read up to 1,200 characters of the body and the file list, not the diff. Its reason for each item is in `registry.csv`. An item whose performance aspect shows only in the code can still be missing.
+- **Verdicts.** They are LLM judgements with file and line evidence, and should be read before acting. A second agent re-read every `implemented` verdict and every high or medium `not` or `partial` verdict. The 1,134 `n/a` verdicts and the low-value `not` and `partial` verdicts had one check only.
+- **Matching.** The 450 records that joined an existing idea did not trigger a new check of that idea.
 - **Measurements.** The replay covers the state transition only. Networking, DB and op-pool numbers come from fleet metrics plus models or benchmarks.
 - **Not covered.** The execution layer, the validator client, the slasher, Gloas-only paths, sync throughput, and changes that no client has made.
 
 ## Updating
 
-The steps below add the PRs and commits since the snapshot, and re-check ideas against a newer Lighthouse.
+The steps below add the PRs and commits since the snapshot without renumbering any idea. Set `PERF_DATA` to the pipeline's `data/derived/` directory and `LH_CHECKOUT` to the Lighthouse checkout.
 
 1. **Scrape.** `corpus/corpus.py update` reads new and changed PRs, and new commits, of every client into the SQLite DB (`CL_CORPUS_DB`). Then `corpus/corpus.py export corpus/data` refreshes the JSONL files.
 2. **Select.** `pipeline/make_batches.py <dir> 300 --new` writes only the items that `registry.csv` does not have, plus PRs whose state changed (for example OPEN to MERGED).
-3. **Triage and extract.** Run `pipeline/workflows/triage-extract.js` on those batches, then `pipeline/make_cluster_in.py`.
-4. **Cluster.** Run `pipeline/workflows/cluster.js`.
-5. **Screen and check.** Run `pipeline/workflows/screen.js`, then `pipeline/workflows/lh-check.js` against a Lighthouse checkout. To re-check everything against a newer Lighthouse, check out that commit, and set `SHA` and `SHA_DATE` in `pipeline/make_repo.py`.
-6. **Publish.** Set `PERF_DATA` to the `data/derived/` directory and `LH_CHECKOUT` to the Lighthouse checkout. `pipeline/make_registry.py` rewrites `registry.csv`. `pipeline/make_repo.py` rewrites the README, `areas/`, `ideas.csv` and `ideas.jsonl`. Commit and push.
+3. **Triage and extract.** Run `pipeline/workflows/triage-extract.js` on those batches. Then `pipeline/make_registry.py` and `pipeline/make_retriage_in.py`, and `pipeline/workflows/retriage.js` on the batches it prints: the items the first triage rejected get a second read on body and files.
+4. **Match.** `pipeline/make_match_in.py`, then `pipeline/workflows/match.js` with its plan. New records join an existing idea or form a new idea with the next free id.
+5. **Check.** `pipeline/merge_ideas.py`, then `pipeline/make_check_in.py <tag>`, then `pipeline/workflows/recheck.js` with the args it prints. Run the three again until it prints 0 unchecked and 0 implemented without a skeptic read: the checks of one round produce `implemented` verdicts for the skeptic of the next.
+6. **Publish.** `pipeline/merge_ideas.py`, `pipeline/make_registry.py` and `pipeline/make_repo.py` rewrite `ideas.final.jsonl`, `registry.csv`, the README, `areas/`, `ideas.csv` and `ideas.jsonl`. Commit and push.
 
-Steps 1, 2 and 6 are incremental. Steps 3 to 5 are not yet:
+To check every idea against a newer Lighthouse, check out that commit, set `SHA` and `SHA_DATE` in `pipeline/make_repo.py`, and run step 5 on all ideas. `pipeline/workflows/cluster.js`, `screen.js` and `lh-check.js` are the first run's steps: `cluster.js` clusters from scratch and renumbers, so use it only to start over.
 
-- `cluster.js` clusters each area from scratch, so a re-run renumbers the idea ids. An incremental run needs a step that matches new records to the existing ideas first.
-- The input files for `screen.js` and `lh-check.js` were built with one-off commands that are not in `pipeline/`.
-
-The workflows are [Claude Code](https://docs.claude.com/en/docs/claude-code) workflow scripts: each one fans out subagents over batch files. Pass `root` (the directory that holds `data/derived/`), `lh` (the Lighthouse checkout) and `pipeline` (this directory) in the workflow args.
+The workflows are [Claude Code](https://docs.claude.com/en/docs/claude-code) workflow scripts: each one fans out subagents over batch files. Pass `root` (the directory that holds `data/derived/`), `lh` (the Lighthouse checkout) and `pipeline` (the `pipeline/` directory) in the workflow args.

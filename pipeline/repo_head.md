@@ -1,6 +1,6 @@
 # Consensus client performance ideas
 
-A study of the performance work in the PR and commit history of 9 Ethereum consensus clients: Prysm, Teku, Lodestar, Nimbus, Lighthouse, Grandine, Caplin (Erigon), Silver and ethlambda. The history yields 1,563 distinct performance ideas. Each one was checked against Lighthouse [`unstable` @ `928b61e719`](https://github.com/sigp/lighthouse/tree/928b61e719c39f7fe8c074767b594fb99f4379bd) (2026-10-30). Built 2026-11-02.
+A study of the performance work in the PR and commit history of 9 Ethereum consensus clients: Prysm, Teku, Lodestar, Nimbus, Lighthouse, Grandine, Caplin (Erigon), Silver and ethlambda. The history yields 3,917 distinct performance ideas. Each one was checked against Lighthouse [`unstable` @ `928b61e719`](https://github.com/sigp/lighthouse/tree/928b61e719c39f7fe8c074767b594fb99f4379bd) (2026-10-30). Built 2026-11-02.
 
 Files:
 
@@ -15,10 +15,12 @@ Files:
 ## How the list was made
 
 1. **Corpus.** The full PR and commit histories of the 9 clients: about 49k PRs and 48k commits. For Erigon, only the commits that touch `cl/` and the PRs they reference are included.
-2. **Triage.** An LLM read 56.8k items, after bot PRs and dependency bumps were removed. 2,977 items that matched perf keywords were always sent on. 6.4k perf records came out.
-3. **Clustering.** The records were merged into 3,675 distinct ideas.
-4. **Prescreen.** An idea was kept when it applies to Lighthouse and has high or medium value, has 3 or more sources, or has a measured result. 1,563 ideas were kept.
-5. **Check.** For each idea, an agent read the Lighthouse code and gave a verdict with file and line evidence. Every `not` or `partial` verdict on a high or medium idea then went to a second agent that was told to disprove it. That pass changed 73 of 337 verdicts.
+2. **Triage.** An LLM read 56.8k items, after bot PRs and dependency bumps were removed, from the title and the start of the body. 2,977 items that matched perf keywords were always sent on.
+3. **Second triage.** The 43,094 items that the first triage rejected were read again with up to 1,200 characters of body and the changed files. 2,916 were sent on, and 733 of them turned out to be performance changes. Every decision of this pass is saved with a reason in `registry.csv`.
+4. **Extraction.** An agent read each item that was sent on in full (with the diff when the text was thin) and wrote a performance record. 7,182 records came out.
+5. **Clustering.** The first 6,449 records were merged into 3,675 distinct ideas. The 733 records of the second triage were then matched to those ideas: 450 joined an existing idea, and 283 formed 242 new ideas with new ids.
+6. **Check.** For every idea, an agent read the Lighthouse code and gave a verdict with file and line evidence, and rated the value.
+7. **Second checks.** Every `not` or `partial` verdict on a high or medium idea went to a second agent that was told to disprove it: 360 ideas, 75 verdicts changed. Every `implemented` verdict went to a skeptic that was told to find where Lighthouse does not do it: 1,842 ideas, 159 verdicts changed (150 to `partial`).
 
 ## How to read it
 

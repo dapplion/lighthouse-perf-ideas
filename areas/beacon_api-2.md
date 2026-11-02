@@ -4,6 +4,1351 @@
 
 Pages: [part 1](beacon_api.md) · [part 2](beacon_api-2.md)
 
+<a id="beacon_api-160"></a>
+<details>
+<summary><b>beacon_api-160</b> Keep column recovery queue in memory — <i>n/a · low · memory, disk, sync</i></summary>
+
+**Idea.** Keep the column sidecar recovery queue in memory instead of persisting it in the database, and start blob/column downloads only when the node is synced.
+
+**Impact.** Lighthouse does not persist a recovery queue in the DB; it is already in memory.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- overflow_lru_cache.rs:73 pending components in memory
+- network/src/network_beacon_processor/mod.rs:1213 reconstruction runs from memory
+
+**Sources.** [caplin#16428](https://github.com/erigontech/erigon/pull/16428)
+
+</details>
+
+
+<a id="beacon_api-161"></a>
+<details>
+<summary><b>beacon_api-161</b> Serve blob by-root fetches from quarantine directly — <i>n/a · low · bandwidth, sync</i></summary>
+
+**Idea.** Remove the async queue for blob by-root requests and compute the missing blobs directly from the quarantine, deduplicating and dropping stale requests.
+
+**Impact.** No async quarantine queue exists; by-root requests are answered directly from store/cache.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- network/src/network_beacon_processor/rpc_methods.rs:673 blobs-by-root served by direct lookup, no quarantine queue
+
+**Sources.** [nimbus#5198](https://github.com/status-im/nimbus-eth2/pull/5198)
+
+</details>
+
+
+<a id="beacon_api-162"></a>
+<details>
+<summary><b>beacon_api-162</b> Skip gossip proof checks for EL-supplied blobs — <i>implemented · medium · S · cpu, latency</i></summary>
+
+**Idea.** When all blobs of a block come from the local EL, mark the block available and skip gossip KZG and inclusion proof verification, keeping a KZG check before persistence.
+
+**Impact.** EL-supplied blob data skips KZG and inclusion-proof verification and goes straight to the DA checker; LH has no separate KZG check before persistence (it trusts the EL).
+
+**Best measured result.** "doesn't call kzg proof verification and inclusion proof verification for 9 blobs per slot"; "faster block import (in happy cases)" (pr:nimbus#6913)
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/beacon_chain/src/fetch_blobs/mod.rs:627`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/fetch_blobs/mod.rs#L627) v4 EL partial columns wrapped with KzgVerifiedPartialDataColumn::from_execution_verified
+- [`beacon_node/beacon_chain/src/fetch_blobs/mod.rs:704`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/fetch_blobs/mod.rs#L704) v2/v3 EL-computed columns wrapped with from_execution_verified (no KZG proof or inclusion proof check)
+- [`beacon_node/beacon_chain/src/fetch_blobs/mod.rs:632-652`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/fetch_blobs/mod.rs#L632-L652) dedup against gossip-observed and DA-cached columns
+
+**Skeptic check.** Verified that both the v2/v3 and v4 getBlobs paths build columns as execution-verified and only filter against already-seen columns. The pre-Fulu blob path no longer exists, so no other path is uncovered. The earlier evidence was correct.
+
+**Verdict history.** implemented (checked) → implemented (skeptic)
+
+**Sources.** [nimbus#6913](https://github.com/status-im/nimbus-eth2/pull/6913)
+
+</details>
+
+
+<a id="beacon_api-163"></a>
+<details>
+<summary><b>beacon_api-163</b> Cache column inclusion proof results — <i>partial · medium · S · cpu</i></summary>
+
+**Idea.** Cache the result of the KZG commitments inclusion proof check per block (key: hash of proof inputs) so other column sidecars of the same block skip the merkle proof.
+
+**Gap in Lighthouse.** There is a per-block verify-once cache of the header and inclusion proof, but only on the partial-columns path, which is opt-in (--enable-partial-columns, default off). Full DataColumnSidecar gossip still recomputes kzg_commitments.tree_hash_root() and the merkle proof for each column of the same block. The fix: in verify_column_inclusion_proof, compare against a cached verified (block_root, commitments_root, proof), or reuse the assembler header cache for full columns.
+
+**Impact.** Saves a commitments tree-hash and a short merkle proof for each additional custody column per block. A few hundred microseconds to a few ms of CPU per slot. Small.
+
+**Best measured result.** 'reduce redundant work' when verifying inclusion proofs; no numbers (pr:prysm#15217)
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/beacon_chain/src/beacon_chain.rs:2488-2497`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/beacon_chain.rs#L2488-L2497) verify_partial_data_column_header_for_gossip returns the cached header from the partial assembler on an equality match, and skips the inclusion proof
+- [`beacon_node/beacon_chain/src/data_column_verification.rs:647`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/data_column_verification.rs#L647) verify_partial_column_header_inclusion_proof runs only for the first header per block, then assembler.init caches it (line 666)
+- [`beacon_node/beacon_chain/src/data_column_verification.rs:1331-1334`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/data_column_verification.rs#L1331-L1334) partial columns without a header reuse the cached verified header (new_from_cached)
+- [`beacon_node/beacon_chain/src/data_column_verification.rs:1160-1176`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/data_column_verification.rs#L1160-L1176) full columns already in the DA cache (from EL or partials) return PriorKnownUnpublished before verify_column_inclusion_proof
+- [`beacon_node/beacon_chain/src/data_column_verification.rs:1178`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/data_column_verification.rs#L1178) full gossip columns still call verify_column_inclusion_proof every time
+- [`beacon_node/beacon_chain/src/chain_config.rs:184`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/chain_config.rs#L184) enable_partial_columns defaults to false
+
+**Second check.** The earlier review missed the partial-column header cache (PartialDataColumnAssembler get_header/init). That cache does verify once per block and then checks equality, but only when partial columns are enabled. Full columns that are already known also skip the proof through missing_cells_for_column_sidecar.
+
+**Verdict history.** not (checked) → partial (refuted)
+
+**Sources.** [prysm#15217](https://github.com/OffchainLabs/prysm/pull/15217)
+
+</details>
+
+
+<a id="beacon_api-164"></a>
+<details>
+<summary><b>beacon_api-164</b> Late DA check with per-block sampling tracker — <i>implemented · medium · S · disk, latency, bandwidth</i></summary>
+
+**Idea.** Track sampled columns per block in memory as they arrive by gossip, EL or RPC, fetch only the missing ones by RPC, and run the availability check as late as possible to give gossip and EL more time.
+
+**Gap in Lighthouse.** Minor: the cache snapshot is taken once, in custody_lookup_request; columns already in flight are not dropped from the request if they arrive by gossip or EL first.
+
+**Impact.** LH defers RPC column fetches until peers corroborate the root and fetches only the missing columns. Re-filtering in-flight requests would only remove occasional duplicate downloads.
+
+**Best measured result.** fewer RPC calls (no numbers) (pr:teku#10006)
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/network/src/network_beacon_processor/gossip_methods.rs:1972-1978`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/network_beacon_processor/gossip_methods.rs#L1972-L1978) MissingComponents on a gossip block only logs; no RPC lookup started
+- [`beacon_node/network/src/sync/manager.rs:1036-1056`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/sync/manager.rs#L1036-L1056) handle_unknown_block_root needs corroboration from unknown_root_min_peers peers
+- [`beacon_node/network/src/sync/network_context.rs:956-990`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/sync/network_context.rs#L956-L990) custody_lookup_request fetches only sampling columns not in cached_data_column_indexes
+- [`beacon_node/beacon_chain/src/data_availability_checker.rs:177`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/data_availability_checker.rs#L177) cached_data_column_indexes is the per-block tracker for gossip, EL and RPC columns
+
+**Second check.** Checked what starts RPC for a gossip block with missing components. Nothing does: the RPC fallback runs only from unknown-root events coming from attestations or columns, after corroboration from several peers. This is in effect Teku's late RPC/DA fallback. Eager availability checks on each arrival do not cause RPC, so they are not a gap.
+
+**Skeptic check.** Re-read the gossip MissingComponents arm, the corroboration gate and the custody request filter; all match the cited lines. The earlier verdict and its small refinement gap were accurate.
+
+**Verdict history.** partial (checked) → implemented (refuted) → implemented (skeptic)
+
+**Sources.** [teku#10006](https://github.com/Consensys-Incorporated/teku/pull/10006)
+
+</details>
+
+
+<a id="beacon_api-165"></a>
+<details>
+<summary><b>beacon_api-165</b> Retry getBlobs until block columns are built — <i>partial · medium · S · latency, bandwidth</i></summary>
+
+**Idea.** Poll engine_getBlobs again with short timeouts, triggered per gossip block, until the columns of a block without sidecars can be built from EL blobs.
+
+**Gap in Lighthouse.** Lighthouse re-calls getBlobs once per distinct arrival event (partial header, gossip block, RPC lookup block, HTTP publish), so a block can get 2-3 independent attempts, but there is no timed re-poll after the last trigger misses. Add a bounded retry with short timeouts in fetch_engine_blobs_and_publish_full until the block is available or the slot cutoff passes.
+
+**Impact.** Covers blobs that reach the EL mempool after the last trigger; builds more columns locally, saving download bandwidth and import latency. Probably modest gain because multiple event triggers already exist.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/network/src/network_beacon_processor/gossip_methods.rs:1123-1133`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/network_beacon_processor/gossip_methods.rs#L1123-L1133) getBlobs triggered when a partial-column header is first seen
+- [`beacon_node/network/src/network_beacon_processor/gossip_methods.rs:1936`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/network_beacon_processor/gossip_methods.rs#L1936) getBlobs triggered again (spawn_fetch_block_columns) when the gossip block is verified
+- [`beacon_node/network/src/network_beacon_processor/sync_methods.rs:211-222`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/network_beacon_processor/sync_methods.rs#L211-L222) getBlobs triggered again for an RPC lookup block that is MissingComponents
+- [`beacon_node/network/src/service.rs:692-702`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/service.rs#L692-L702) FetchBlockColumns for HTTP-published blocks
+- [`beacon_node/beacon_chain/src/fetch_blobs/mod.rs:132-240`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/fetch_blobs/mod.rs#L132-L240) no dedup/in-flight guard, no retry loop; miss returns Ok(None)
+- [`beacon_node/execution_layer/src/engine_api/http.rs:74`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/execution_layer/src/engine_api/http.rs#L74) ENGINE_GET_BLOBS_TIMEOUT 1s
+
+**Second check.** Beyond the earlier review, found that getBlobs runs on several separate events (partial header and gossip block both, with no dedup), which is an event-driven re-attempt but not the timed polling the idea describes.
+
+**Verdict history.** not (checked) → partial (refuted)
+
+**Sources.** [nimbus#8012](https://github.com/status-im/nimbus-eth2/pull/8012), [nimbus#7445](https://github.com/status-im/nimbus-eth2/pull/7445)
+
+</details>
+
+
+<a id="beacon_api-166"></a>
+<details>
+<summary><b>beacon_api-166</b> Dedicated executor queue for DA tasks — <i>n/a · low · latency</i></summary>
+
+**Idea.** Give data availability tasks their own async executor queue so they do not exhaust the shared operation pool and get rejected.
+
+**Impact.** Beacon processor already has separate bounded queues for DA work, so it cannot exhaust a shared pool.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/beacon_processor/src/lib.rs:953`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_processor/src/lib.rs#L953),1118 separate per-work-type queues (column reconstruction, rpc blob, gossip column)
+
+**Sources.** [teku#9657](https://github.com/Consensys-Incorporated/teku/pull/9657)
+
+</details>
+
+
+<a id="beacon_api-167"></a>
+<details>
+<summary><b>beacon_api-167</b> Per-block-root cache of pending state queues — <i>not · low · M · cpu, latency</i></summary>
+
+**Idea.** Keep per-block-root LRU caches of pending deposit, consolidation and partial-withdrawal queues in fork choice so the pending-queue API endpoints are served without loading or rebuilding a state.
+
+**Gap in Lighthouse.** Add per-block-root caches of pending deposit/consolidation/withdrawal queues in fork choice or beacon chain and serve non-head state_ids from them in get_beacon_state_pending_* in states.rs.
+
+**Impact.** Head queries already use the in-memory head state; only non-head state ids load a state. Rare endpoints, little gain.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/beacon/states.rs:273-303`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/beacon/states.rs#L273-L303) pending_deposits loads state via state_id and clones the list
+- [`beacon_node/http_api/src/state_id.rs:218-242`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/state_id.rs#L218-L242) head state used directly, no load
+
+**Sources.** [caplin#16231](https://github.com/erigontech/erigon/pull/16231)
+
+</details>
+
+
+<a id="beacon_api-168"></a>
+<details>
+<summary><b>beacon_api-168</b> Serve history from archived per-epoch data — <i>not · low · L · cpu, disk, latency</i></summary>
+
+**Idea.** Archive compact per-epoch data (committee seed, active indices, proposer, balances) so historical duty and balance API queries read small records instead of regenerating or loading historical states.
+
+**Gap in Lighthouse.** Archive compact per-epoch records (seed, active indices, proposer, balances) at finalization and read them in attester_duties.rs and states.rs committees/validator_balances for old epochs.
+
+**Impact.** Old-epoch duty/balance queries would stop needing hdiff state reconstruction; matters only for explorer/archive API users.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/attester_duties.rs:120-145`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/attester_duties.rs#L120-L145) historical duties load state at epoch start slot and rebuild committee cache
+- [`beacon_node/store/src/metadata.rs`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/store/src/metadata.rs) hdiff store, no per-epoch archive of committees/balances
+
+**Sources.** [prysm#3559](https://github.com/OffchainLabs/prysm/pull/3559), [prysm#3536](https://github.com/OffchainLabs/prysm/pull/3536)
+
+</details>
+
+
+<a id="beacon_api-169"></a>
+<details>
+<summary><b>beacon_api-169</b> Cache or compute shuffling dependent root once — <i>implemented · low · S · cpu, latency</i></summary>
+
+**Idea.** Compute the spec shuffling dependent root once per epoch from the head view and reuse it in duties and head events, avoiding per-request recomputation and byte/hex conversions; a stable value also stops validator clients refetching duties on every head.
+
+**Impact.** Negligible; the hot duties path already uses the cached shuffling and its decision root.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/attester_duties.rs:45-80`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/attester_duties.rs#L45-L80)
+- [`beacon_node/beacon_chain/src/beacon_chain.rs:1747-1763`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/beacon_chain.rs#L1747-L1763)
+- [`beacon_node/beacon_chain/src/canonical_head.rs:1240-1244`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/canonical_head.rs#L1240-L1244)
+
+**Skeptic check.** The current and next epoch duties go through cached_attestation_duties, then with_committee_cache, which returns the dependent root with the cached shuffling. Only historic requests compute it from a state, with an O(1) block_roots lookup. The head event does an O(1) lookup per head and has no hex round-trips. The earlier verdict was right.
+
+**Verdict history.** implemented (checked) → implemented (skeptic)
+
+**Sources.** [lodestar#4382](https://github.com/ChainSafe/lodestar/pull/4382), [caplin#24393](https://github.com/erigontech/erigon/pull/24393)
+
+</details>
+
+
+<a id="beacon_api-170"></a>
+<details>
+<summary><b>beacon_api-170</b> Compact merkle multiproof responses — <i>not · low · M · bandwidth, cpu</i></summary>
+
+**Idea.** Serve proofs for several generalized indices as a deduplicated multiproof (shared nodes only) rather than one proof per path, shrinking responses.
+
+**Gap in Lighthouse.** Would need a new state proof endpoint in http_api using milhouse/tree_hash multiproof generation; none exists.
+
+**Impact.** No mainnet node cost; only a niche API with smaller responses for proof consumers.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/lib.rs`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/lib.rs): no state proof route
+- [`beacon_node/http_api/src/light_client.rs`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/light_client.rs) bootstrap only
+
+**Sources.** [lodestar#5155](https://github.com/ChainSafe/lodestar/pull/5155)
+
+</details>
+
+
+<a id="beacon_api-171"></a>
+<details>
+<summary><b>beacon_api-171</b> Narrow state-field and count endpoints — <i>partial · low · S · bandwidth, cpu, latency</i></summary>
+
+**Idea.** Expose dedicated endpoints returning only a small piece of state (counts, a single field, committee for a slot) computed from caches, so consumers do not fetch and serialize the full state or validator set.
+
+**Gap in Lighthouse.** Narrow endpoints mostly exist; missing a standard validator-count endpoint and serving non-head cases from caches instead of loaded states.
+
+**Impact.** Consumers avoid fetching the full state; head requests already cheap, so gain is small.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/lib.rs:622`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/lib.rs#L622) finality_checkpoints, :690 states/ptc
+- [`beacon_node/http_api/src/beacon/states.rs:586`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/beacon/states.rs#L586) committees, :273 pending_*, :431 sync_committees
+- [`beacon_node/http_api/src/lib.rs:3068`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/lib.rs#L3068) lighthouse/ui/validator_count
+
+**Sources.** [prysm#12752](https://github.com/OffchainLabs/prysm/pull/12752), [lodestar#10190](https://github.com/ChainSafe/lodestar/pull/10190), [lodestar#7245](https://github.com/ChainSafe/lodestar/pull/7245), [lodestar#10189](https://github.com/ChainSafe/lodestar/pull/10189), [nimbus#6675](https://github.com/status-im/nimbus-eth2/pull/6675)
+
+</details>
+
+
+<a id="beacon_api-172"></a>
+<details>
+<summary><b>beacon_api-172</b> Delete dead computation in API handlers — <i>n/a · low · S · cpu</i></summary>
+
+**Idea.** Remove per-request work in API handlers whose results are never read, such as full validator set scans or tree hashing, since they cost CPU with no consumer.
+
+**Gap in Lighthouse.** The cited dead work was specific to Caplin/Prysm handlers; none found in a spot check (not a full audit).
+
+**Impact.** None identified.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- spot check of [`beacon_node/http_api/src`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src) handlers only
+
+**Sources.** [caplin#24518](https://github.com/erigontech/erigon/pull/24518), [prysm#17009](https://github.com/OffchainLabs/prysm/pull/17009)
+
+</details>
+
+
+<a id="beacon_api-173"></a>
+<details>
+<summary><b>beacon_api-173</b> Do not sign API response bodies — <i>implemented · low · S · cpu</i></summary>
+
+**Idea.** Do not hash and sign every HTTP API response body in the validator API, and skip client verification, saving CPU per request.
+
+**Impact.** Already removed by lighthouse#5529.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`validator_client/http_api/src/api_secret.rs:24`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/validator_client/http_api/src/api_secret.rs#L24)
+- [`common/eth2/src/lighthouse_vc/http_client.rs:124`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/common/eth2/src/lighthouse_vc/http_client.rs#L124)
+
+**Skeptic check.** api_secret.rs says the VC response signing and the secp256k1 key were removed. There is no signing or verification code left in the VC http_api or its client.
+
+**Verdict history.** implemented (checked) → implemented (skeptic)
+
+**Sources.** [lighthouse#5529](https://github.com/sigp/lighthouse/pull/5529)
+
+</details>
+
+
+<a id="beacon_api-174"></a>
+<details>
+<summary><b>beacon_api-174</b> Node-side cache of produced payload envelope — <i>implemented · low · S · latency</i></summary>
+
+**Idea.** Keep the proposer-built execution payload envelope in a node-side cache and return it with the block so a stateless validator client needs no extra round trip or state.
+
+**Impact.** Stateless VC mode with no extra envelope round trip.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/produce_block.rs:57-125`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/produce_block.rs#L57-L125)
+- [`validator_client/validator_services/src/block_service.rs:281-345`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/validator_client/validator_services/src/block_service.rs#L281-L345)
+- [`validator_client/validator_services/src/block_service.rs:702-750`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/validator_client/validator_services/src/block_service.rs#L702-L750)
+- [`beacon_node/http_api/src/validator/execution_payload_envelopes.rs:51`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/validator/execution_payload_envelopes.rs#L51)
+- [`beacon_node/beacon_chain/src/block_production/gloas.rs:920`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/block_production/gloas.rs#L920)
+
+**Skeptic check.** The earlier evidence cited only the separate GET from pending_payload_envelopes, which still costs a round trip. produce_block_v4 also takes include_payload and returns BlockAndEnvelope, and the VC uses it under --stateless-block-production. This matches Prysm's opt-in stateless block v4.
+
+**Verdict history.** implemented (checked) → implemented (skeptic)
+
+**Sources.** [prysm#16699](https://github.com/OffchainLabs/prysm/pull/16699)
+
+</details>
+
+
+<a id="beacon_api-175"></a>
+<details>
+<summary><b>beacon_api-175</b> Filter inactive validators from builder registrations — <i>implemented · low · S · bandwidth, cpu</i></summary>
+
+**Idea.** Drop registrations of exited or slashed validators before forwarding them to the builder, so fewer registrations are sent and processed.
+
+**Impact.** Already filters out inactive validators before forwarding to the builder.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/validator/mod.rs:730-760`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/validator/mod.rs#L730-L760)
+
+**Skeptic check.** register_validator gets each validator from the head state and keeps only the Pending or Active superstatus before it sends registrations to the builder. Unknown pubkeys are also dropped.
+
+**Verdict history.** implemented (checked) → implemented (skeptic)
+
+**Sources.** [lighthouse#3473](https://github.com/sigp/lighthouse/pull/3473)
+
+</details>
+
+
+<a id="beacon_api-176"></a>
+<details>
+<summary><b>beacon_api-176</b> Resolve roots from fork choice before database — <i>partial · low · S · disk, latency</i></summary>
+
+**Idea.** In API handlers, check in-memory fork choice (finalization status, highest received slot and root) before the database, falling back to disk only on a miss.
+
+**Gap in Lighthouse.** Head/Finalized/Justified come from cached head with no DB. By-root lookups hit the hot DB first; fork choice is not consulted for existence/slot. In BlockId::root, check fork choice proto-array for Root ids first.
+
+**Impact.** Saves a DB key check and block load per by-root API call on recent blocks; API is not hot.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/block_id.rs:75-96`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/block_id.rs#L75-L96) Slot uses block_root_at_slot
+- [`beacon_node/http_api/src/block_id.rs:105-131`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/block_id.rs#L105-L131) Root: store.block_exists (hot DB) then blinded block load; fork choice only for optimistic flag
+- [`beacon_node/beacon_chain/src/beacon_chain.rs:631`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/beacon_chain.rs#L631) is_finalized_block uses cached_head
+
+**Sources.** [prysm#11803](https://github.com/OffchainLabs/prysm/pull/11803), [prysm#14380](https://github.com/OffchainLabs/prysm/pull/14380)
+
+</details>
+
+
+<a id="beacon_api-177"></a>
+<details>
+<summary><b>beacon_api-177</b> Render JSON responses in place into buffer — <i>not · low · M · memory, cpu</i></summary>
+
+**Idea.** Render JSON directly into the response buffer, writing Content-Length as padded whitespace filled in afterwards, avoiding a second body buffer and copy.
+
+**Gap in Lighthouse.** Responses are serialized to a buffer and then handed to hyper; no in-place Content-Length padding. Would need a custom streaming writer.
+
+**Impact.** Saves one copy on very large JSON responses; heavy clients use SSZ.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/lib.rs`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/lib.rs): replies built with warp json into a separate buffer
+- [`common/warp_utils/src/json.rs`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/common/warp_utils/src/json.rs) request parsing only
+
+**Sources.** [silver#278](https://github.com/gattaca-com/silver/pull/278)
+
+</details>
+
+
+<a id="beacon_api-178"></a>
+<details>
+<summary><b>beacon_api-178</b> Serve REST directly without gRPC proxy layer — <i>n/a · low · S · cpu, latency</i></summary>
+
+**Idea.** Serve the REST API straight from handlers rather than through a proxy that converts to and from gRPC and re-serializes JSON, removing a hop and a serialization round trip.
+
+**Gap in Lighthouse.** Lighthouse serves REST directly with no gRPC gateway.
+
+**Impact.** None.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/lib.rs`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/lib.rs) warp handlers call beacon_chain directly
+
+**Sources.** [prysm#13243](https://github.com/OffchainLabs/prysm/pull/13243)
+
+</details>
+
+
+<a id="beacon_api-179"></a>
+<details>
+<summary><b>beacon_api-179</b> Skip blob and column lookups when none can exist — <i>partial · low · S · disk, latency</i></summary>
+
+**Idea.** In blob and data column sidecar APIs, return empty without touching storage for pre-fork blocks or blocks with no KZG commitments, and avoid loading payloads to test emptiness.
+
+**Gap in Lighthouse.** Blob path already skips storage. Data column path still queries the column store for commitment-less post-Fulu blocks. Add a blob_kzg_commitments().is_empty() early return in BlockId::get_data_columns.
+
+**Impact.** Avoids a DB read for empty blocks on a rarely called API; marginal.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/block_id.rs:292-306`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/block_id.rs#L292-L306) get_data_columns rejects pre-Fulu but loads the block first and never checks blob_kzg_commitments empty
+- [`beacon_node/http_api/src/block_id.rs:359-387`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/block_id.rs#L359-L387) blob path skips storage when commitments empty
+
+**Sources.** [lodestar#8336](https://github.com/ChainSafe/lodestar/pull/8336), [teku#7453](https://github.com/Consensys-Incorporated/teku/pull/7453), [teku#10209](https://github.com/Consensys-Incorporated/teku/pull/10209), [teku#10333](https://github.com/Consensys-Incorporated/teku/pull/10333)
+
+</details>
+
+
+<a id="beacon_api-L000"></a>
+<details>
+<summary><b>beacon_api-L000</b> parent root index — <i>n/a · low · cpu, latency</i></summary>
+
+**Idea.** Add a secondary index parent_root -&gt; list of block roots so headers-by-parent queries do a lookup instead of scanning.
+
+**Impact.** Lookup is a short iterator scan from parent slot to the first non-skipped root; no scan of all blocks, so an index gains almost nothing.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/lib.rs:729-756`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/lib.rs#L729-L756) parent_root query uses block lookup plus forwards_iter_block_roots from the parent slot
+
+**Sources.** [caplin#11729](https://github.com/erigontech/erigon/pull/11729)
+
+</details>
+
+
+<a id="beacon_api-L001"></a>
+<details>
+<summary><b>beacon_api-L001</b> narrow lock scope, drop caches — <i>n/a · low · memory, cpu, latency</i></summary>
+
+**Idea.** Release the shared state lock as early as possible during aggregate processing, and drop debug-only diff structures and compression of random 32-byte hash caches, which cost memory and allocations for no gain.
+
+**Impact.** Go/Caplin-specific lock scope and debug diff structures have no counterpart in Lighthouse.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/beacon_chain/src/beacon_chain.rs`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/beacon_chain.rs) (no Caplin-style debug diff structures); aggregate processing uses fine-grained locks
+
+**Sources.** [caplin#12571](https://github.com/erigontech/erigon/pull/12571)
+
+</details>
+
+
+<a id="beacon_api-L002"></a>
+<details>
+<summary><b>beacon_api-L002</b> pre-commit overlay notifications — <i>n/a · low · latency</i></summary>
+
+**Idea.** Publish head/state-change notifications to RPC subscribers from the in-memory overlay before the DB commit finishes, so latest-state queries do not wait on disk.
+
+**Impact.** Lighthouse has no DB overlay; latest-state queries read the in-memory cached head, not disk.
+
+**Best measured result.** responsiveness not throughput; no numbers
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/beacon_chain/src/canonical_head.rs`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/canonical_head.rs): head is in an in-memory cached_head, SSE events fire from memory
+
+**Sources.** [caplin#20195](https://github.com/erigontech/erigon/pull/20195)
+
+</details>
+
+
+<a id="beacon_api-L003"></a>
+<details>
+<summary><b>beacon_api-L003</b> pre-sized direct JSON encoding — <i>partial · low · S · cpu, latency, memory</i></summary>
+
+**Idea.** For large JSON responses (blobs bundle), marshal directly into one pre-sized buffer with in-place hex encoding and write the already-encoded result verbatim through the RPC handler and codec, avoiding repeated reflection marshalling and compact re-scans of the payload.
+
+**Gap in Lighthouse.** Rust serde is typed (no reflection), so the 10x reflection cost does not exist. Remaining: each blob is hex-encoded into two temporary Strings and the output Vec is not pre-sized. A hex-into-buffer serializer in ssz_types hex_fixed_vec plus a pre-sized body in blocking_json_task would remove it.
+
+**Impact.** Blob/data-column JSON endpoints allocate ~2 extra copies per 128KB blob; small CPU saving on a rarely hit API, likely tens of percent on that call at most.
+
+**Best measured result.** getBlobsV3 128 blobs: 309 ms -&gt; 29 ms (~10.6x); marshal 16,516 allocs -&gt; 1
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/task_spawner.rs:102`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/task_spawner.rs#L102) warp::reply::json -&gt; serde_json::to_vec, unsized growing Vec
+- ~/.cargo ssz_types-0.14.1/src/serde_utils/hex_fixed_vec.rs:11 hex::encode builds String per blob
+- ethereum_serde_utils-0.8.1/src/hex.rs:7-12 second String via '0x' prefix copy
+
+**Sources.** [caplin#21606](https://github.com/erigontech/erigon/pull/21606)
+
+</details>
+
+
+<a id="beacon_api-L004"></a>
+<details>
+<summary><b>beacon_api-L004</b> publish head before state copy — <i>partial · medium · S · latency</i></summary>
+
+**Idea.** Publish the selected fork-choice head (root, slot) atomically at selection time, before the state copy, and serve identity-only API endpoints from it, so public handlers need not wait ~750 ms for the memoized head state or trigger fork-choice work on a cache miss.
+
+**Gap in Lighthouse.** API handlers never block on head computation (they read the previous CachedHead), but the new head root/slot is only published after the state load/advance and cache build. Publish (root, slot) atomically right after new_view is chosen in recompute_head_at_slot_internal and serve identity-only endpoints from it.
+
+**Impact.** Removes lag of head root/header endpoints behind fork choice; small in steady state because the post-import state is normally a state-cache hit.
+
+**Best measured result.** block/root endpoints lagged ~750 ms behind the selected head
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/beacon_chain/src/canonical_head.rs:1106-1160`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/canonical_head.rs#L1106-L1160) new snapshot (get_full_block, get_advanced_hot_state, build_all_caches) built before cached_head write lock; only then is the new root visible
+- [`beacon_node/http_api/src/block_id.rs:48-57`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/block_id.rs#L48-L57) BlockId::Head root reads canonical_head.head_and_execution_status() (old snapshot, no waiting)
+
+**Second check.** Checked the BlockId::Head path and recompute_head: no early-published head identity exists; Lighthouse avoids the waiting half of the problem (handlers read the stale snapshot) but not the lag.
+
+**Verdict history.** partial (checked) → partial (refuted)
+
+**Sources.** [caplin#23155](https://github.com/erigontech/erigon/pull/23155)
+
+</details>
+
+
+<a id="beacon_api-L005"></a>
+<details>
+<summary><b>beacon_api-L005</b> serialize lists without copy — <i>not · low · S · memory, cpu</i></summary>
+
+**Idea.** Serialize the state's pending deposit, withdrawal and consolidation lists directly to JSON/SSZ through a trait object rather than copying them into new lists with different limits.
+
+**Gap in Lighthouse.** In get_beacon_state_pending_{deposits,partial_withdrawals,consolidations}, serialize the milhouse List directly (or iterate) instead of to_owned_list() into a Vec.
+
+**Impact.** Saves one Vec copy per request on rarely-called endpoints; pending_deposits can be large but call frequency is low.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/beacon/states.rs:58`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/beacon/states.rs#L58),118,298 call to_owned_list() on pending consolidations/withdrawals/deposits, then as_ssz_bytes / JSON
+
+**Sources.** [grandine#968](https://github.com/grandinetech/grandine/pull/968)
+
+</details>
+
+
+<a id="beacon_api-L006"></a>
+<details>
+<summary><b>beacon_api-L006</b> time-based skip slot limit — <i>not · low · S · latency</i></summary>
+
+**Idea.** Bound state skip-slot work by time rather than a fixed slot count.
+
+**Gap in Lighthouse.** Add a time budget (Instant check) inside the while loop in the state-at-slot function and return an error when exceeded; the warn at 1543 does not bound work.
+
+**Impact.** Protects API/duty requests from unbounded skip-slot work on a long-stalled chain; no gain in normal operation.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/beacon_chain/src/beacon_chain.rs:1535-1580`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/beacon_chain.rs#L1535-L1580) state_at_slot loops per_slot_processing with only a warn when skipping more than an epoch
+
+**Sources.** [lighthouse#639](https://github.com/sigp/lighthouse/pull/639)
+
+</details>
+
+
+<a id="beacon_api-L007"></a>
+<details>
+<summary><b>beacon_api-L007</b> remove rayon deadlock — <i>implemented · low · S · latency, cpu</i></summary>
+
+**Idea.** Remove rayon parallelism from HTTP handlers because it deadlocked when combined with the blocking executor.
+
+**Impact.** HTTP handlers do not use rayon parallelism directly, so the handler-level deadlock that PR #1562 removed is gone.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/Cargo.toml`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/Cargo.toml): no rayon dependency
+- [`beacon_node/http_api/src`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src): no rayon or par_iter use (grep empty)
+
+**Skeptic check.** Confirmed with grep that http_api has no rayon use. This is a correctness fix more than a performance idea. Shared code that handlers call can still use rayon internally, but that is not the pattern PR #1562 removed.
+
+**Verdict history.** implemented (checked) → implemented (skeptic)
+
+**Sources.** [lighthouse#1562](https://github.com/sigp/lighthouse/pull/1562)
+
+</details>
+
+
+<a id="beacon_api-L008"></a>
+<details>
+<summary><b>beacon_api-L008</b> server-side validator filter — <i>implemented · low · S · bandwidth, cpu</i></summary>
+
+**Idea.** Let the validators endpoint filter by validator id and status server-side, so clients fetch only the validators they need instead of the whole registry.
+
+**Impact.** Clients get only the validators they request. The registry is still scanned linearly (no direct index or pubkey-cache lookup), but this cost is small next to serialization.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/validators.rs:24-33`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/validators.rs#L24-L33) id and status HashSet filters
+- [`beacon_node/http_api/src/validators.rs:36-72`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/validators.rs#L36-L72) filters applied while iterating, and only matches are cloned and serialized
+- [`beacon_node/http_api/src/validators.rs:105-118`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/validators.rs#L105-L118) same id filter for balances
+
+**Skeptic check.** Filtering by id and status happens server-side as the idea says. A possible further step is a direct index or pubkey-cache lookup for small id lists, but that goes beyond this idea.
+
+**Verdict history.** implemented (checked) → implemented (skeptic)
+
+**Sources.** [lighthouse#1803](https://github.com/sigp/lighthouse/pull/1803)
+
+</details>
+
+
+<a id="beacon_api-L009"></a>
+<details>
+<summary><b>beacon_api-L009</b> skip proposer cache for future epoch — <i>implemented · low · S · cpu</i></summary>
+
+**Idea.** For proposer duties requests on the next epoch, bypass the proposer cache because its dependent root changes each slot, so the cache would only be washed out by useless entries.
+
+**Impact.** Next-epoch requests do not fill the proposer cache with useless entries, so block processing keeps its cached entries.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/proposer_duties.rs:81-89`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/proposer_duties.rs#L81-L89) only current/tolerant-current epoch reads or writes beacon_proposer_cache
+- [`beacon_node/http_api/src/proposer_duties.rs:90-108`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/proposer_duties.rs#L90-L108) next epoch computed via compute_proposer_duties_from_head with no cache insert
+- [`beacon_node/beacon_chain/src/beacon_proposer_cache.rs:254-310`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/beacon_proposer_cache.rs#L254-L310) compute_proposer_duties_from_head does not touch the cache
+
+**Skeptic check.** Confirmed that the next-epoch branch does not insert into the cache. Post-Fulu the next-epoch lookahead is deterministic, so caching it could now be safe, but that is a different idea.
+
+**Verdict history.** implemented (checked) → implemented (skeptic)
+
+**Sources.** [lighthouse#2963](https://github.com/sigp/lighthouse/pull/2963)
+
+</details>
+
+
+<a id="beacon_api-L010"></a>
+<details>
+<summary><b>beacon_api-L010</b> historic committee cache from randao — <i>partial · medium · S · latency, cpu</i></summary>
+
+**Idea.** Serve historic committee queries by building a committee cache for the requested past epoch directly from randao mixes in a recent state, instead of replaying to a state at that epoch.
+
+**Gap in Lighthouse.** Only GET beacon/states/{id}/committees uses CommitteeCache::initialized for past epochs. compute_historic_attester_duties (POST validator/duties/attester/{epoch} for a past epoch) loads a full state with StateId::from_slot(request_epoch.start_slot), which replays from cold storage, and then calls build_committee_cache. It could build the committee cache from the head state's randao mixes (and reuse HistoricalCommitteeCache), as the committees endpoint does.
+
+**Impact.** Historic attester-duty queries would skip state replay (seconds to minutes) for epochs inside the head state's randao window.
+
+**Best measured result.** reconstruction usually upwards of 20s, sometimes minutes
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/beacon/states.rs:640-687`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/beacon/states.rs#L640-L687)
+- [`beacon_node/http_api/src/caches.rs:22-44`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/caches.rs#L22-L44)
+- [`beacon_node/http_api/src/attester_duties.rs:83-126`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/attester_duties.rs#L83-L126)
+
+**Skeptic check.** The committees endpoint does what PR #3272 describes, so the earlier evidence is right for that endpoint. The historic attester duties endpoint still replays a state.
+
+**Verdict history.** implemented (checked) → partial (skeptic)
+
+**Sources.** [lighthouse#3272](https://github.com/sigp/lighthouse/pull/3272)
+
+</details>
+
+
+<a id="beacon_api-L011"></a>
+<details>
+<summary><b>beacon_api-L011</b> pubkey cache lookup — <i>partial · low · S · cpu, latency</i></summary>
+
+**Idea.** Look up validators by pubkey through the state's pubkey-to-index cache instead of scanning the whole validator registry per query.
+
+**Gap in Lighthouse.** The single-validator path uses chain.validator_index. The bulk paths (get_beacon_state_validators, get_beacon_state_validator_balances, get_beacon_state_validator_identities) still iterate the whole registry (about 2M entries) for each request, and do two HashSet lookups per validator, even when only a few pubkeys/indices are requested. Resolving the ids through chain.validator_index and then indexing the state directly would make this O(m). External VCs (Teku, Vouch, Nimbus) use POST states/head/validators with id lists, so they take this path. sync_committee_rewards also calls state.get_validator_index for every reward times every id.
+
+**Impact.** Small-id bulk validator queries would drop from a full registry scan (about 100ms or more) to microseconds.
+
+**Best measured result.** queries by pubkey took 10ms+ from registry loop
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/validator/mod.rs:48-64`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/validator/mod.rs#L48-L64)
+- [`beacon_node/http_api/src/beacon/states.rs:780`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/beacon/states.rs#L780)
+- [`beacon_node/http_api/src/validators.rs:24-47`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/validators.rs#L24-L47)
+- [`beacon_node/http_api/src/validators.rs:100-116`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/validators.rs#L100-L116)
+- [`beacon_node/http_api/src/sync_committee_rewards.rs:35`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/sync_committee_rewards.rs#L35)
+
+**Skeptic check.** The single lookup is implemented as described (it uses the global pubkey cache). The earlier evidence wrongly counted the bulk hash-filter path as a cache lookup: that path still scans the whole registry.
+
+**Verdict history.** implemented (checked) → partial (skeptic)
+
+**Sources.** [lighthouse#3559](https://github.com/sigp/lighthouse/pull/3559)
+
+</details>
+
+
+<a id="beacon_api-L012"></a>
+<details>
+<summary><b>beacon_api-L012</b> server-side status counting — <i>implemented · low · S · cpu, latency</i></summary>
+
+**Idea.** Provide an endpoint that counts validators by status in one pass server-side instead of returning the full validator set for the client to count.
+
+**Impact.** One server-side pass returns the counts instead of the full validator set.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/ui.rs:23-73`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/ui.rs#L23-L73) get_validator_count does one pass over head state validators and counts by ValidatorStatus
+- [`beacon_node/http_api/src/lib.rs:3068-3078`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/lib.rs#L3068-L3078) GET lighthouse/ui/validator_count route
+
+**Skeptic check.** Verified that the function and the route exist. The earlier evidence was correct.
+
+**Verdict history.** implemented (checked) → implemented (skeptic)
+
+**Sources.** [lighthouse#3756](https://github.com/sigp/lighthouse/pull/3756)
+
+</details>
+
+
+<a id="beacon_api-L013"></a>
+<details>
+<summary><b>beacon_api-L013</b> single-pass accept parse — <i>implemented · low · S · cpu</i></summary>
+
+**Idea.** Parse the HTTP Accept header in a single pass choosing the highest q-factor supported media type without sorting.
+
+**Impact.** Accept parsing is a single pass. The gain is negligible.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`common/eth2/src/types.rs:1721-1770`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/common/eth2/src/types.rs#L1721-L1770) Accept::from_str keeps the highest q in one for_each pass, no sort
+- [`beacon_node/http_api/src/aggregate_attestation.rs:18`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/aggregate_attestation.rs#L18) and validator/execution_payload_envelopes.rs:35 server parses Accept through this FromStr (warp::header::optional::&lt;Accept&gt;)
+
+**Skeptic check.** Read the parser: it does a single pass with a running max and no sort, and the server handlers use it. The earlier evidence was correct.
+
+**Verdict history.** implemented (checked) → implemented (skeptic)
+
+**Sources.** [lighthouse#4216](https://github.com/sigp/lighthouse/pull/4216)
+
+</details>
+
+
+<a id="beacon_api-L014"></a>
+<details>
+<summary><b>beacon_api-L014</b> head root priority and skip block load — <i>implemented · low · S · latency, disk</i></summary>
+
+**Idea.** Raise the beacon-processor priority of head block root API requests used for sync committee messages, and avoid loading the blinded block unless block_id is a block root.
+
+**Impact.** Head-root requests for sync committee messages jump the API queue and never load a block. The early-attester-cache path even answers before import completes.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/lib.rs:1244-1249`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/lib.rs#L1244-L1249) BlockId::Head gets Priority::P0, others P1
+- [`beacon_node/http_api/src/lib.rs:1250-1272`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/lib.rs#L1250-L1272) head fast path from early_attester_cache, else block_id.root
+- [`beacon_node/http_api/src/block_id.rs`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/block_id.rs) root(): Head/Genesis/Finalized/Justified/Slot return without loading a block, and only the Root variant calls get_blinded_block
+
+**Skeptic check.** Verified the priority split, and that BlockId::root loads the blinded block only for explicit roots (to compute finalized). The current code goes further than PR #4799 with the early-attester-cache fast path.
+
+**Verdict history.** implemented (checked) → implemented (skeptic)
+
+**Sources.** [lighthouse#4799](https://github.com/sigp/lighthouse/pull/4799)
+
+</details>
+
+
+<a id="beacon_api-L015"></a>
+<details>
+<summary><b>beacon_api-L015</b> single network channel send — <i>partial · low · S · latency, cpu</i></summary>
+
+**Idea.** When publishing a block from the HTTP API, send the block and its blobs to the network service in a single channel message instead of several sends, to reduce overhead.
+
+**Gap in Lighthouse.** Blobs no longer exist (Fulu data columns); block and columns go in separate channel messages, columns batched. Merging the block into the column message would be possible but block is intentionally sent first.
+
+**Impact.** Saves one unbounded channel send per block proposal; negligible.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/publish_blocks.rs:184`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/publish_blocks.rs#L184) block published via one NetworkMessage::Publish
+- [`beacon_node/http_api/src/publish_blocks.rs:520`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/publish_blocks.rs#L520) columns sent in one publish_pubsub_messages call plus one PublishPartialColumns
+- [`beacon_node/http_api/src/utils.rs:73`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/utils.rs#L73) publish_pubsub_messages batches
+
+**Sources.** [lighthouse#4863](https://github.com/sigp/lighthouse/pull/4863)
+
+</details>
+
+
+<a id="beacon_api-L016"></a>
+<details>
+<summary><b>beacon_api-L016</b> hashset id filter — <i>implemented · low · S · cpu, latency</i></summary>
+
+**Idea.** Filter validators by requested ids/pubkeys using a HashSet lookup per state validator instead of scanning the input list per validator, turning O(n*m) into O(n).
+
+**Impact.** The filter is O(n) with O(1) set lookups on all three bulk endpoints.
+
+**Best measured result.** 2s to 12+s with 8k IDs before (slowdown); fix removes it
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/validators.rs:24-27`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/validators.rs#L24-L27)
+- [`beacon_node/http_api/src/validators.rs:39-46`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/validators.rs#L39-L46)
+- [`beacon_node/http_api/src/validators.rs:95-116`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/validators.rs#L95-L116)
+- [`beacon_node/http_api/src/validators.rs:143-160`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/validators.rs#L143-L160)
+
+**Skeptic check.** Verified: the HashSet filter from PR #5468 is used by the validators, balances and identities endpoints. Earlier evidence correct.
+
+**Verdict history.** implemented (checked) → implemented (skeptic)
+
+**Sources.** [lighthouse#5468](https://github.com/sigp/lighthouse/pull/5468)
+
+</details>
+
+
+<a id="beacon_api-L017"></a>
+<details>
+<summary><b>beacon_api-L017</b> persist light client bootstrap — <i>implemented · medium · S · cpu, disk</i></summary>
+
+**Idea.** Persist light client bootstrap parts (sync committee branch by block root, sync committee by period) so bootstrap is served without expensive computation or state queries.
+
+**Impact.** Bootstrap is built from the blinded block plus the persisted branch and committee, with no state load, on both the RPC and HTTP paths.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/beacon_chain/src/light_client_server_cache.rs:396-444`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/light_client_server_cache.rs#L396-L444)
+- [`beacon_node/beacon_chain/src/beacon_chain.rs:8374-8389`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/beacon_chain.rs#L8374-L8389)
+- [`beacon_node/store/src/hot_cold_store.rs:770-802`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/store/src/hot_cold_store.rs#L770-L802)
+- [`beacon_node/network/src/network_beacon_processor/rpc_methods.rs:990`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/network_beacon_processor/rpc_methods.rs#L990)
+- [`beacon_node/http_api/src/light_client.rs:71`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/light_client.rs#L71)
+
+**Skeptic check.** Verified on both the RPC and HTTP paths. No backfill exists for periods before the node synced, but that limits coverage and does not affect performance. Earlier evidence correct.
+
+**Verdict history.** implemented (checked) → implemented (skeptic)
+
+**Sources.** [lighthouse#5915](https://github.com/sigp/lighthouse/pull/5915)
+
+</details>
+
+
+<a id="beacon_api-L018"></a>
+<details>
+<summary><b>beacon_api-L018</b> single lock acquisition — <i>implemented · low · S · latency</i></summary>
+
+**Idea.** Read all needed fields from the canonical head under one lock acquisition instead of locking twice, to cut lock contention in the syncing endpoint.
+
+**Impact.** None left; /node/syncing already reads the head once.
+
+**Best measured result.** "responses were taking 4-10s on occasion"
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/beacon_chain/src/canonical_head.rs:589-598`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/canonical_head.rs#L589-L598) head_and_execution_status reads cached_head once, then one fork choice read lock
+- [`beacon_node/http_api/src/lib.rs:2452-2455`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/lib.rs#L2452-L2455) /node/syncing takes head slot and optimistic status from that single call
+
+**Skeptic check.** Verified that /node/syncing gets head slot and execution status from one head_and_execution_status call, which is the #6202 change itself. Earlier evidence was right.
+
+**Verdict history.** implemented (checked) → implemented (skeptic)
+
+**Sources.** [lighthouse#6202](https://github.com/sigp/lighthouse/pull/6202)
+
+</details>
+
+
+<a id="beacon_api-L019"></a>
+<details>
+<summary><b>beacon_api-L019</b> raise API request priority — <i>implemented · low · S · latency</i></summary>
+
+**Idea.** Raise the beacon-processor priority of validator-info HTTP requests so they are not starved and time out under load.
+
+**Impact.** Head-state validator requests (GET/POST validators, single validator, validator_identities) run at P0, which is the exact change of PR 6292.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/beacon/states.rs:769`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/beacon/states.rs#L769)
+- [`beacon_node/http_api/src/beacon/states.rs:850`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/beacon/states.rs#L850)
+- [`beacon_node/http_api/src/beacon/states.rs:911`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/beacon/states.rs#L911)
+- [`beacon_node/http_api/src/beacon/states.rs:948`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/beacon/states.rs#L948)
+
+**Skeptic check.** The PR's three P1-&gt;P0 switches for state_id=head are present (moved from lib.rs to beacon/states.rs), and identities also has the switch. Earlier evidence was right.
+
+**Verdict history.** implemented (checked) → implemented (skeptic)
+
+**Sources.** [lighthouse#6292](https://github.com/sigp/lighthouse/pull/6292)
+
+</details>
+
+
+<a id="beacon_api-L020"></a>
+<details>
+<summary><b>beacon_api-L020</b> server-side supply computation — <i>not · low · S · bandwidth, cpu</i></summary>
+
+**Idea.** Add a node-side endpoint that sums balances for a state, so clients do not download and parse 68MB of JSON validator balances.
+
+**Gap in Lighthouse.** Add a non-standard route (e.g. GET /lighthouse/.../supply or beacon/states/{id}/total_balance) that sums state.balances() inside map_state_and_execution_optimistic_and_finalized and returns one number; also add it to eth2 client types.
+
+**Impact.** Saves a ~68MB JSON download+parse per supply query for tooling/explorers; negligible for a validating node, only benefits API consumers.
+
+**Best measured result.** avoids 68MB JSON download
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/lib.rs`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/lib.rs), validators.rs, beacon/states.rs: grep for supply/total balance finds only validator_balances (returns full list)
+- no supply endpoint in http_api/src
+
+**Sources.** [lighthouse#7102](https://github.com/sigp/lighthouse/pull/7102)
+
+</details>
+
+
+<a id="beacon_api-L021"></a>
+<details>
+<summary><b>beacon_api-L021</b> not-while-syncing guard on duties — <i>implemented · medium · S · cpu, sync</i></summary>
+
+**Idea.** Reject validator duty endpoints (e.g. proposer duties) while the node is far behind head, since computing duties requires advancing state over many slots and starves sync.
+
+**Impact.** Proposer, attester and sync duties are rejected while the node is far behind, so state advances do not starve sync.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/lib.rs:475-512`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/lib.rs#L475-L512) not_while_syncing_filter rejects in SyncingFinalized/SyncingHead when head_slot + sync_tolerance_epochs*slots &lt; current_slot
+- [`beacon_node/http_api/src/validator/mod.rs:1403`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/validator/mod.rs#L1403) get_validator_duties_proposer uses not_while_syncing_filter
+- [`beacon_node/http_api/src/validator/mod.rs:161`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/validator/mod.rs#L161) post_validator_duties_attester uses it
+- [`beacon_node/http_api/src/validator/mod.rs:125`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/validator/mod.rs#L125) post_validator_duties_sync uses it
+
+**Skeptic check.** Verified that the filter is on the proposer, attester, sync and PTC duty routes and on block production. Earlier evidence was right.
+
+**Verdict history.** implemented (checked) → implemented (skeptic)
+
+**Sources.** [lighthouse#7962](https://github.com/sigp/lighthouse/pull/7962)
+
+</details>
+
+
+<a id="beacon_api-L022"></a>
+<details>
+<summary><b>beacon_api-L022</b> head root fast path — <i>implemented · low · S · latency</i></summary>
+
+**Idea.** Serve the head block root endpoint from the early attester cache when it is at least as recent as the cached head, avoiding waiting for the import to finish.
+
+**Impact.** Head block root is served from early_attester_cache before import completes, at P0.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/lib.rs:1245`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/lib.rs#L1245)
+- [`beacon_node/http_api/src/lib.rs:1259`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/lib.rs#L1259)
+
+**Skeptic check.** get_beacon_block_root uses early_attester_cache.get_head_block_root when its slot &gt;= cached head slot, which is PR 8729. Earlier evidence was right.
+
+**Verdict history.** implemented (checked) → implemented (skeptic)
+
+**Sources.** [lighthouse#8729](https://github.com/sigp/lighthouse/pull/8729)
+
+</details>
+
+
+<a id="beacon_api-L023"></a>
+<details>
+<summary><b>beacon_api-L023</b> skip duties when stalled — <i>not · medium · S · cpu, latency</i></summary>
+
+**Idea.** Skip proposer duty computation (expensive state advance) while sync is stalled, not only while syncing, to avoid overwhelming the work queue.
+
+**Gap in Lighthouse.** Stalled state passes the filter, and the proposer duties handler has no own head-lag guard, so a far-behind stalled node still computes duties via state advance. Apply the head-slot-vs-tolerance check to the Stalled arm.
+
+**Impact.** Avoids expensive state advances and api_request_p0 work-queue overflow on a stalled far-behind node; no steady-state effect.
+
+**Best measured result.** avoids 'Work queue is full' api_request_p0 at 1024
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/lib.rs:509`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/lib.rs#L509) SyncState::Stalled =&gt; Ok(()) in not_while_syncing_filter
+- [`beacon_node/http_api/src/lib.rs:2703-2706`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/lib.rs#L2703-L2706) proposer duties route uses not_while_syncing_filter
+- [`beacon_node/http_api/src/proposer_duties.rs:80-90`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/proposer_duties.rs#L80-L90) cache miss calls compute_and_cache_proposer_duties with no head-distance check
+- [`beacon_node/network/src/sync/manager.rs:673`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/sync/manager.rs#L673) Stalled set when no advanced/synced peers
+
+**Second check.** Also checked the proposer_duties handler itself for a head-distance or skip guard; none exists, so the earlier verdict stands.
+
+**Verdict history.** not (checked) → not (refuted)
+
+**Sources.** [lighthouse#9538](https://github.com/sigp/lighthouse/pull/9538)
+
+</details>
+
+
+<a id="beacon_api-L024"></a>
+<details>
+<summary><b>beacon_api-L024</b> index lookup instead of full scan — <i>not · medium · S · cpu, latency</i></summary>
+
+**Idea.** For validator/balance state endpoints with a requested validator set, resolve the ids to indices first and read those validators directly instead of scanning the whole registry and filtering.
+
+**Gap in Lighthouse.** All three list endpoints scan the whole registry even for a few ids. Resolve ids to indices (index directly, pubkey via validator_pubkey_cache / state pubkey cache) and read validators().get(i)/balances().get(i); scan only when no ids (or status-only filter).
+
+**Impact.** Subset requests drop from a full registry scan (~260 ms) to a few ms (6 ms for 100 vals per the PR).
+
+**Best measured result.** validator_balances 100 vals: 260 ms to 6 ms; 10k: 260 to 23 ms; 100k: 320 to 110 ms
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/validators.rs:86-125`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/validators.rs#L86-L125) balances endpoint scans validators().iter().zip(balances()) and filters by HashSet
+- [`beacon_node/http_api/src/validators.rs:134-170`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/validators.rs#L134-L170) identities endpoint does the same full scan
+- [`beacon_node/http_api/src/validators.rs:9-75`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/validators.rs#L9-L75) get_beacon_state_validators also full-scans with id filter
+
+**Second check.** Read all of validators.rs including get_beacon_state_validators (not cited earlier): it uses the same full scan, so the verdict stands and the gap covers three endpoints.
+
+**Verdict history.** not (checked) → not (refuted)
+
+**Sources.** [lighthouse#10037](https://github.com/sigp/lighthouse/pull/10037)
+
+</details>
+
+
+<a id="beacon_api-L025"></a>
+<details>
+<summary><b>beacon_api-L025</b> light client updates without state cache — <i>implemented · medium · S · memory</i></summary>
+
+**Idea.** Generate light client updates only from the post-state at block import, kept as small proofs, without needing historical states in the state cache.
+
+**Impact.** Updates come from proofs taken at import; a state load happens only on a cache miss.
+
+**Best measured result.** No numbers
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/beacon_chain/src/beacon_chain.rs:4787-4795`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/beacon_chain.rs#L4787-L4795) cache_state_data on the import post-state
+- [`beacon_node/beacon_chain/src/light_client_server_cache.rs:59-77`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/light_client_server_cache.rs#L59-L77) LightClientCachedData::from_state stores branches in the prev_block_cache LRU
+- [`beacon_node/beacon_chain/src/light_client_server_cache.rs:80-210`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/light_client_server_cache.rs#L80-L210) recompute_and_cache_updates uses only blocks and cached proofs
+- [`beacon_node/beacon_chain/src/light_client_server_cache.rs:271-291`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/light_client_server_cache.rs#L271-L291) get_or_compute_prev_block_cache loads a state only on an LRU miss
+- [`beacon_node/beacon_chain/src/light_client_server_cache.rs:396-440`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/light_client_server_cache.rs#L396-L440) bootstrap is served from stored sync committee branch, not state
+
+**Skeptic check.** Verified that proofs are taken from the post-state at import and that updates and bootstrap are built from blocks plus the stored branches. Earlier evidence was right.
+
+**Verdict history.** implemented (checked) → implemented (skeptic)
+
+**Sources.** [lodestar#3461](https://github.com/ChainSafe/lodestar/pull/3461)
+
+</details>
+
+
+<a id="beacon_api-L026"></a>
+<details>
+<summary><b>beacon_api-L026</b> zero-copy response body — <i>n/a · low · memory, cpu</i></summary>
+
+**Idea.** Return a typed-array response body without copying its backing buffer; the HTTP server converts it to a Buffer as a view. This avoids copying large SSZ responses.
+
+**Impact.** n/a: JS typed array copy semantics, no equivalent in Rust.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/lib.rs:2148`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/lib.rs#L2148) debug state handler returns Vec&lt;u8&gt; body directly
+
+**Sources.** [lodestar#6626](https://github.com/ChainSafe/lodestar/pull/6626)
+
+</details>
+
+
+<a id="beacon_api-L027"></a>
+<details>
+<summary><b>beacon_api-L027</b> zero-copy state response — <i>n/a · low · memory, cpu</i></summary>
+
+**Idea.** Convert the serialized state to a Buffer as a view over the same memory rather than copying it, when serving state as SSZ. This cuts memory growth and GC per state request.
+
+**Impact.** n/a: JS Buffer.from copy has no Rust analogue; SSZ is encoded once into a Vec.
+
+**Best measured result.** Buffer.from copy 137ms vs no copy 895ns
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/lib.rs:2148`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/lib.rs#L2148) get_debug_beacon_states
+
+**Sources.** [lodestar#6687](https://github.com/ChainSafe/lodestar/pull/6687)
+
+</details>
+
+
+<a id="beacon_api-L028"></a>
+<details>
+<summary><b>beacon_api-L028</b> ssz http wire format — <i>partial · low · M · bandwidth, cpu</i></summary>
+
+**Idea.** Prefer SSZ over JSON as the response wire format for validator-to-beacon-node HTTP APIs (and request format where supported), avoiding JSON encode/decode cost and payload size.
+
+**Gap in Lighthouse.** Block production/publication and validator_identities already use SSZ; attester/proposer/sync duties, attestation data and aggregate submission still use JSON in the VC. Extending SSZ to those needs spec endpoints that support it.
+
+**Impact.** Marginal CPU/bandwidth saving on VC&lt;-&gt;BN traffic; matters mostly for large validator sets.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`validator_client/validator_services/src/block_service.rs:714`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/validator_client/validator_services/src/block_service.rs#L714) post_validator_blocks_v4_ssz
+- [`common/eth2/src/lib.rs:840`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/common/eth2/src/lib.rs#L840) post_beacon_states_validator_identities_ssz
+- [`common/eth2/src/types.rs:1714`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/common/eth2/src/types.rs#L1714) Accept::Ssz
+
+**Sources.** [lodestar#6840](https://github.com/ChainSafe/lodestar/pull/6840)
+
+</details>
+
+
+<a id="beacon_api-L029"></a>
+<details>
+<summary><b>beacon_api-L029</b> upgrade HTTP server — <i>n/a · low · cpu</i></summary>
+
+**Idea.** Upgrade the HTTP server framework to a version that removed deprecated code paths for lower per-request overhead.
+
+**Impact.** n/a: Node HTTP framework upgrade specific to Lodestar.
+
+**Best measured result.** promises 5-10% performance increase
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- Cargo.lock warp/axum HTTP stack
+
+**Sources.** [lodestar#7101](https://github.com/ChainSafe/lodestar/pull/7101)
+
+</details>
+
+
+<a id="beacon_api-L030"></a>
+<details>
+<summary><b>beacon_api-L030</b> lightweight validator endpoint — <i>implemented · low · S · cpu, bandwidth</i></summary>
+
+**Idea.** Offer a lightweight validator identities endpoint returning only pubkey and index, with SSZ encoding, instead of full validator objects, so clients that need only indices pull less data.
+
+**Impact.** POST validator_identities returns only index, pubkey and activation_epoch, with SSZ when Accept is SSZ.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/validators.rs:134`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/validators.rs#L134)
+- [`beacon_node/http_api/src/beacon/states.rs:931`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/beacon/states.rs#L931)
+- [`beacon_node/http_api/src/beacon/states.rs:960`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/beacon/states.rs#L960)
+- [`common/eth2/src/lib.rs:840`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/common/eth2/src/lib.rs#L840)
+
+**Skeptic check.** I confirmed the handler and its SSZ branch (as_ssz_bytes) and the eth2 client SSZ variant. Earlier evidence was right.
+
+**Verdict history.** implemented (checked) → implemented (skeptic)
+
+**Sources.** [lodestar#7107](https://github.com/ChainSafe/lodestar/pull/7107), [prysm#15086](https://github.com/OffchainLabs/prysm/pull/15086)
+
+</details>
+
+
+<a id="beacon_api-L031"></a>
+<details>
+<summary><b>beacon_api-L031</b> serve checkpoint state API — <i>implemented · low · S · sync</i></summary>
+
+**Idea.** Serve persisted safe checkpoint states over an API so new nodes can bootstrap quickly from peers.
+
+**Impact.** Finalized, justified and any hot/cold state by root are served as SSZ through debug/beacon/states/{state_id}, which covers the non-finality rescue case.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/state_id.rs:41`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/state_id.rs#L41)
+- [`beacon_node/http_api/src/state_id.rs:48`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/state_id.rs#L48)
+- [`beacon_node/http_api/src/state_id.rs:68`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/state_id.rs#L68)
+- [`beacon_node/http_api/src/lib.rs:2148`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/lib.rs#L2148)
+
+**Skeptic check.** Lodestar needed a new endpoint because its persisted checkpoint states were not reachable through the standard API. Lighthouse resolves Justified and arbitrary hot state roots from its store, so a safe non-finalized state is already servable. The earlier note said only finalized is served; that part was wrong, but the verdict holds.
+
+**Verdict history.** implemented (checked) → implemented (skeptic)
+
+**Sources.** [lodestar#7541](https://github.com/ChainSafe/lodestar/pull/7541)
+
+</details>
+
+
+<a id="beacon_api-L032"></a>
+<details>
+<summary><b>beacon_api-L032</b> range read instead of full load — <i>not · low · S · cpu, memory</i></summary>
+
+**Idea.** Compute pending balance to withdraw by reading a range of pending partial withdrawals rather than loading the entire list; consider a pending-balance cache.
+
+**Gap in Lighthouse.** get_pending_balance_to_withdraw does a full O(n) scan of the ProgressiveList per call; a per-validator cache or index would avoid it. The list is usually small, so gain is minor.
+
+**Impact.** Per-exit/withdrawal-request/consolidation scan of pending list; negligible on mainnet today unless the list grows large.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`consensus/types/src/state/beacon_state.rs:3232`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/consensus/types/src/state/beacon_state.rs#L3232) get_pending_balance_to_withdraw iterates all pending_partial_withdrawals with filter
+- [`consensus/state_processing/src/per_block_processing/process_operations.rs:840`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/consensus/state_processing/src/per_block_processing/process_operations.rs#L840),1171 callers; verify_exit.rs:84
+
+**Sources.** [lodestar#7598](https://github.com/ChainSafe/lodestar/pull/7598), [prysm#4262](https://github.com/OffchainLabs/prysm/pull/4262)
+
+</details>
+
+
+<a id="beacon_api-L033"></a>
+<details>
+<summary><b>beacon_api-L033</b> skip preprocessing without listeners — <i>implemented · low · S · cpu, memory</i></summary>
+
+**Idea.** Only guard event emission with listener-count checks where preprocessing is costly (hex mapping, async payload attribute building), skipping that work when no SSE subscribers exist.
+
+**Impact.** Expensive SSE preprocessing (blob/data column sidecar conversion, payload attribute building) is skipped when there are no subscribers.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/beacon_chain/src/events.rs:325`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/events.rs#L325)
+- [`beacon_node/beacon_chain/src/beacon_chain.rs:3653`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/beacon_chain.rs#L3653)
+- [`beacon_node/beacon_chain/src/beacon_chain.rs:3677`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/beacon_chain.rs#L3677)
+- [`beacon_node/beacon_chain/src/beacon_chain.rs:7073`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/beacon_chain.rs#L7073)
+
+**Skeptic check.** The blob sidecar, data column sidecar and payload attributes emit sites are the only register calls for those kinds, and each one is guarded by a has_*_subscribers check. Earlier evidence was right.
+
+**Verdict history.** implemented (checked) → implemented (skeptic)
+
+**Sources.** [lodestar#8293](https://github.com/ChainSafe/lodestar/pull/8293)
+
+</details>
+
+
+<a id="beacon_api-L034"></a>
+<details>
+<summary><b>beacon_api-L034</b> skip stale light client updates — <i>partial · low · S · cpu, bandwidth</i></summary>
+
+**Idea.** Do not emit light client updates that are stale relative to what was already emitted.
+
+**Gap in Lighthouse.** Per-period best-update storage skips worse updates, but the finality/optimistic update gossip/SSE path was not shown to be gated on staleness; check the emit functions.
+
+**Impact.** Marginal; light client serving is rare on mainnet nodes.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/beacon_chain/src/light_client_server_cache.rs:192-205`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/light_client_server_cache.rs#L192-L205) compares with is_better_light_client_update before persisting/caching
+
+**Sources.** [lodestar#8522](https://github.com/ChainSafe/lodestar/pull/8522)
+
+</details>
+
+
+<a id="beacon_api-L035"></a>
+<details>
+<summary><b>beacon_api-L035</b> skip redundant DB lookup — <i>implemented · low · S · disk, latency</i></summary>
+
+**Idea.** Skip the DB block fetch, deserialize and hashTreeRoot for the genesis block root when the state already provides it.
+
+**Impact.** None to gain: the genesis block root is a BeaconChain field and is never read from the DB on request paths.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/block_id.rs:59`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/block_id.rs#L59)
+- [`beacon_node/beacon_chain/src/beacon_chain.rs:488`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/beacon_chain.rs#L488)
+- [`beacon_node/beacon_chain/src/beacon_chain.rs:1052`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/beacon_chain.rs#L1052)
+
+**Skeptic check.** BlockId::Genesis and the block_root_at_slot genesis case both return the in-memory genesis_block_root. The source Lodestar PR was closed without merge. Earlier evidence was right.
+
+**Verdict history.** implemented (checked) → implemented (skeptic)
+
+**Sources.** [lodestar#9082](https://github.com/ChainSafe/lodestar/pull/9082)
+
+</details>
+
+
+<a id="beacon_api-L036"></a>
+<details>
+<summary><b>beacon_api-L036</b> skip redundant DB lookup — <i>implemented · low · S · disk, latency</i></summary>
+
+**Idea.** Skip the DB block fetch, deserialize and hashTreeRoot for the genesis block root when the state already provides it.
+
+**Impact.** None to gain: the genesis block root is held in memory.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/block_id.rs:59`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/block_id.rs#L59)
+- [`beacon_node/beacon_chain/src/beacon_chain.rs:488`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/beacon_chain.rs#L488)
+- [`beacon_node/beacon_chain/src/beacon_chain.rs:1052`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/beacon_chain.rs#L1052)
+
+**Skeptic check.** This is a duplicate of L035 (Lodestar 9083, closed). Lighthouse has no DB fetch for the genesis root. Earlier evidence was right.
+
+**Verdict history.** implemented (checked) → implemented (skeptic)
+
+**Sources.** [lodestar#9083](https://github.com/ChainSafe/lodestar/pull/9083)
+
+</details>
+
+
+<a id="beacon_api-L037"></a>
+<details>
+<summary><b>beacon_api-L037</b> skip redundant DB lookup — <i>implemented · low · S · disk, latency</i></summary>
+
+**Idea.** Skip the DB block fetch, deserialize and hashTreeRoot for the genesis block root when the state already provides it.
+
+**Impact.** None to gain: the genesis block root is held in memory.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/block_id.rs:59`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/block_id.rs#L59)
+- [`beacon_node/beacon_chain/src/beacon_chain.rs:488`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/beacon_chain.rs#L488)
+- [`beacon_node/beacon_chain/src/beacon_chain.rs:1123`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/beacon_chain.rs#L1123)
+
+**Skeptic check.** This is a duplicate of L035 (Lodestar 9084, closed). Lighthouse has no DB fetch for the genesis root. Earlier evidence was right.
+
+**Verdict history.** implemented (checked) → implemented (skeptic)
+
+**Sources.** [lodestar#9084](https://github.com/ChainSafe/lodestar/pull/9084)
+
+</details>
+
+
+<a id="beacon_api-L038"></a>
+<details>
+<summary><b>beacon_api-L038</b> guard old-slot reconstruction — <i>implemented · low · S · cpu, latency</i></summary>
+
+**Idea.** In blob REST endpoints, return 404 immediately for post-Fulu slots older than the data-column availability window instead of entering the expensive column reconstruction path.
+
+**Impact.** Pruned (out-of-window) slots exit before reconstruction. An explicit window check would save one empty prefix scan and change 400 to 404.
+
+**Best measured result.** ~407 getBlobs requests caused p99 event-loop lag spike to 18.1s
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/block_id.rs:501-520`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/block_id.rs#L501-L520) get_data_columns_for_blob_reconstruction counts stored column keys and returns 400 if fewer than NUMBER_OF_COLUMNS/2, before any column load or KZG recovery
+- [`beacon_node/http_api/src/block_id.rs:365-368`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/block_id.rs#L365-L368) blob_sidecars reconstructs only after that check
+- [`beacon_node/http_api/src/block_id.rs:434-437`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/block_id.rs#L434-L437) blobs-by-versioned-hashes uses the same guard
+- [`beacon_node/store/src/hot_cold_store.rs:2657-2666`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/store/src/hot_cold_store.rs#L2657-L2666) get_data_column_keys is a prefix scan that ends at once when columns are pruned
+
+**Skeptic check.** Verified that both blob endpoints go through the key-count guard, and that pruned slots have no column keys, so they exit before reconstruction. The effect matches Lodestar's 404 guard. Only the status code differs.
+
+**Verdict history.** implemented (checked) → implemented (skeptic)
+
+**Sources.** [lodestar#9536](https://github.com/ChainSafe/lodestar/pull/9536)
+
+</details>
+
+
+<a id="beacon_api-L039"></a>
+<details>
+<summary><b>beacon_api-L039</b> guard old-slot reconstruction — <i>implemented · low · S · cpu, latency</i></summary>
+
+**Idea.** In blob REST endpoints, compute the data-column availability start as max(earliest available slot, retention floor) and return 404 early for older slots rather than attempting column reconstruction.
+
+**Impact.** Same as L038: out-of-window slots never reach reconstruction. Only the max(earliest, retention floor) 404 is absent, and it is cosmetic.
+
+**Best measured result.** ~407 getBlobs requests caused p99 event-loop lag spike to 18.1s
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/http_api/src/block_id.rs:501-520`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/block_id.rs#L501-L520) key-count guard before reconstruction
+- [`beacon_node/http_api/src/block_id.rs:365-368`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/block_id.rs#L365-L368) blob_sidecars path
+- [`beacon_node/http_api/src/block_id.rs:434-437`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/http_api/src/block_id.rs#L434-L437) blobs-by-versioned-hashes path
+- [`beacon_node/store/src/hot_cold_store.rs:2657-2666`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/store/src/hot_cold_store.rs#L2657-L2666) get_data_column_keys prefix scan
+
+**Skeptic check.** This is a duplicate of L038 (Lodestar follow-up #9537). The guard decides on data that is actually present, not on a computed window, so slots older than the window exit early. Upheld.
+
+**Verdict history.** implemented (checked) → implemented (skeptic)
+
+**Sources.** [lodestar#9537](https://github.com/ChainSafe/lodestar/pull/9537)
+
+</details>
+
+
 <a id="beacon_api-L040"></a>
 <details>
 <summary><b>beacon_api-L040</b> refuse regen API while syncing — <i>not · medium · S · cpu, latency, sync</i></summary>

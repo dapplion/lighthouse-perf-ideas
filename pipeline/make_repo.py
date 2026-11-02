@@ -15,6 +15,9 @@ out = os.path.dirname(HERE)
 REPOS = json.load(open(os.path.join(out, "corpus", "repos.json")))
 GH = {r["name"]: r["gh"] for r in REPOS}
 os.makedirs(os.path.join(out, "areas"), exist_ok=True)
+for f in os.listdir(os.path.join(out, "areas")):  # pages are rewritten in full; a page that is no longer needed must go
+    if f.endswith(".md"):
+        os.remove(os.path.join(out, "areas", f))
 
 ideas = [json.loads(l) for l in open(os.path.join(DATA, "ideas.final.jsonl"))]
 for i in ideas:
@@ -123,8 +126,10 @@ def id_key(i):
     return (n.startswith("L"), int(n.lstrip("L")))
 
 
-# GitHub stops rendering a Markdown file at about 512 KB: an area with more text continues on a second page.
-LIMIT = 380_000
+# GitHub truncates a rendered Markdown file between 358 KB (seen whole) and 412 KB (seen truncated), so an area
+# with more text continues on a second page. LIMIT is for the idea records; the index table on page 1 comes on top.
+LIMIT = 290_000
+PAGE_MAX = 350_000
 page = {}
 for a in areas:
     g = sorted(by_area[a], key=id_key)
@@ -159,7 +164,9 @@ for a in areas:
                          f"| {i['value']} | {i.get('effort') or ''} | {', '.join(i.get('resources') or [])} |")
             A += ["", "★ actionable. Click an id for the full record.", "", "## Ideas", ""]
         A += [t for _, t in pg]
-        open(os.path.join(out, "areas", name), "w").write("\n".join(A) + "\n")
+        text = "\n".join(A) + "\n"
+        assert len(text.encode()) < PAGE_MAX, f"{name} is {len(text.encode())} bytes"
+        open(os.path.join(out, "areas", name), "w").write(text)
 
 head = open(os.path.join(HERE, "repo_head.md")).read().rstrip()
 head = re.sub(r"\b([a-z_]+-L?\d{3})\b", lambda m: f"[{m.group(1)}](areas/{page[m.group(1)]}#{m.group(1)})" if m.group(1) in page else m.group(1), head)

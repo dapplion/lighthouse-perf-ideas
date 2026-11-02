@@ -1,10 +1,50 @@
 # backfill
 
-14 checked ideas, 3 actionable. [Back to the summary](../README.md).
+14 ideas: 2 not, 1 partial, 11 implemented; 3 actionable (high or medium value, verdict `not` or `partial`). [Back to the summary](../README.md).
 
-## Actionable (3)
+The area has 34 numbered ideas; the 20 ids missing here have not been checked against Lighthouse yet.
 
-High or medium value, verdict `not` or `partial`.
+| id | idea | verdict | value | effort | resources |
+|---|---|---|---|---|---|
+| [backfill-001](#backfill-001) | Backfill only to the block-request retention window | implemented | high |  | disk, bandwidth, sync, cpu |
+| [backfill-002](#backfill-002) **★** | Use fork-specific shorter block-request window for backfill | not | medium | S | bandwidth, disk, sync |
+| [backfill-003](#backfill-003) | Custody backfill fetches only custodied columns | implemented | medium |  | bandwidth, cpu |
+| [backfill-004](#backfill-004) | Ask each peer only for its column subset | implemented | medium |  | bandwidth |
+| [backfill-005](#backfill-005) **★** | Per-peer fault attribution and partial retry in backfill | partial | medium | M | sync, bandwidth |
+| [backfill-006](#backfill-006) | Run backfill only when forward sync is at head | implemented | low | S | sync, bandwidth, cpu |
+| [backfill-007](#backfill-007) | Batch KZG verification of backfilled columns | implemented | medium |  | cpu, disk |
+| [backfill-009](#backfill-009) | Dedicated low-priority thread pool for backfill | implemented | medium |  | cpu, latency, sync |
+| [backfill-011](#backfill-011) | Rate-limit backfill batch processing per slot | implemented | low | S | cpu, sync, disk |
+| [backfill-014](#backfill-014) | Cap number of buffered backfill batches | implemented | low | S | cpu, bandwidth |
+| [backfill-018](#backfill-018) **★** | Backfill history from era files or snapshots | not | medium | L | sync, bandwidth, disk, startup |
+| [backfill-024](#backfill-024) | Parallel pipelined block range requests in backfill | implemented | low | S | sync, latency, cpu |
+| [backfill-026](#backfill-026) | Cursor-based custody column backfiller | implemented | low | S | bandwidth, sync, disk |
+| [backfill-034](#backfill-034) | Short pubkey cache lock in backfill signature checks | implemented | low | S | latency, cpu |
+
+★ actionable. Click an id for the full record.
+
+## Ideas
+
+<a id="backfill-001"></a>
+<details>
+<summary><b>backfill-001</b> Backfill only to the block-request retention window — <i>implemented · high · disk, bandwidth, sync, cpu</i></summary>
+
+**Idea.** After checkpoint sync, backfill blocks (and blobs) only back to the weak subjectivity / MIN_EPOCHS_FOR_BLOCK_REQUESTS boundary instead of genesis, with full history opt-in. Older blocks are not servable on the network, so this cuts download, verification and disk.
+
+**Impact.** Already in place.
+
+**Best measured result.** stops syncing back to genesis; only about the last 5 months of blocks are downloaded (pr:lighthouse#4082)
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/beacon_chain/src/builder.rs:942`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/builder.rs#L942) genesis_backfill_slot defaults to a WSP-derived epoch unless --genesis-backfill
+- [`beacon_node/network/src/sync/backfill_sync/mod.rs:172`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/sync/backfill_sync/mod.rs#L172) backfill complete check vs genesis_backfill_slot
+- [`beacon_node/src/cli.rs:429`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/src/cli.rs#L429) genesis-backfill opt-in flag
+
+**Sources.** [lighthouse#3943](https://github.com/sigp/lighthouse/pull/3943), [lighthouse#4082](https://github.com/sigp/lighthouse/pull/4082), [grandine#94](https://github.com/grandinetech/grandine/pull/94), [nimbus#4421](https://github.com/status-im/nimbus-eth2/pull/4421), [grandine@e35b912a4](https://github.com/grandinetech/grandine/commit/e35b912a4598), [teku#6581](https://github.com/Consensys-Incorporated/teku/pull/6581)
+
+</details>
+
 
 <a id="backfill-002"></a>
 <details>
@@ -29,28 +69,45 @@ High or medium value, verdict `not` or `partial`.
 
 </details>
 
-<a id="backfill-018"></a>
+
+<a id="backfill-003"></a>
 <details>
-<summary><b>backfill-018</b> Backfill history from era files or snapshots — <i>not · medium · L · sync, bandwidth, disk, startup</i></summary>
+<summary><b>backfill-003</b> Custody backfill fetches only custodied columns — <i>implemented · medium · bandwidth, cpu</i></summary>
 
-**Idea.** Read finalized history from era files or downloadable prebuilt block snapshots and use them to backfill after checkpoint sync, instead of downloading each block from peers.
+**Idea.** In data-column custody backfill, request only the columns the node custodies, not the full sampling set, because extra columns are verified and then discarded.
 
-**Gap in Lighthouse.** Add an era-file (or snapshot) reader that feeds historical blocks into import_historical_block_batch as a source other than peers, plus file fetch and a CLI flag. Era files carry blocks and state but not blobs or columns.
+**Impact.** Already in place.
 
-**Impact.** Would replace peer download of the ~5-month backfill window (hundreds of thousands of blocks, many GB) with a file read. Saves peer bandwidth and sync time, not steady-state cost.
-
-**Best measured result.** expected to cut backfill to download time of the files; front-fill loads mainnet in about 10s (pr:nimbus#3394)
+**Best measured result.** halves download for 4 of 8 columns (pr:lighthouse#8916)
 
 **Evidence (Lighthouse @ 928b61e719).**
 
-- [`beacon_node/beacon_chain/src/historical_blocks.rs:84`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/historical_blocks.rs#L84) import_historical_block_batch has one non-test caller: [`beacon_node/network/src/network_beacon_processor/sync_methods.rs:692`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/network_beacon_processor/sync_methods.rs#L692) (peer-downloaded backfill batches)
-- Cargo.lock has no era/e2store crate; a whole-word grep for era/e2store over .rs/.md/.toml finds nothing
+- [`beacon_node/network/src/sync/custody_backfill_sync/mod.rs:454`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/sync/custody_backfill_sync/mod.rs#L454) batch built with ByRangeRequestType::Columns(get_missing_columns_for_epoch)
+- [`beacon_node/network/src/sync/custody_backfill_sync/mod.rs:395`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/sync/custody_backfill_sync/mod.rs#L395) epochs with no missing columns are skipped
 
-**Second check.** Checked the dependency list for any era/e2store crate and every caller of the historical import. Checkpoint sync fetches only the anchor state and block, so no non-peer history source exists.
-
-**Sources.** [nimbus#3394](https://github.com/status-im/nimbus-eth2/pull/3394), [nimbus#4283](https://github.com/status-im/nimbus-eth2/pull/4283), [caplin#8665](https://github.com/erigontech/erigon/pull/8665)
+**Sources.** [lighthouse#8916](https://github.com/sigp/lighthouse/pull/8916)
 
 </details>
+
+
+<a id="backfill-004"></a>
+<details>
+<summary><b>backfill-004</b> Ask each peer only for its column subset — <i>implemented · medium · bandwidth</i></summary>
+
+**Idea.** When requesting data columns for custody backfill, choose peers by the requested column set and send each peer a request for only the columns it serves, instead of the full request to every peer, to avoid N-times download amplification.
+
+**Impact.** Already in place.
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/network/src/sync/network_context.rs:1607`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/sync/network_context.rs#L1607) custody_backfill_data_columns_batch_request builds column set from request.columns
+- [`beacon_node/network/src/sync/network_context.rs:578`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/sync/network_context.rs#L578) select_columns_by_range_peers_to_request groups columns per peer
+- [`beacon_node/network/src/sync/network_context.rs:1635`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/sync/network_context.rs#L1635) each peer gets DataColumnsByRangeRequest with only its columns
+
+**Sources.** [lighthouse#10048](https://github.com/sigp/lighthouse/pull/10048)
+
+</details>
+
 
 <a id="backfill-005"></a>
 <details>
@@ -76,80 +133,30 @@ High or medium value, verdict `not` or `partial`.
 
 </details>
 
-## Other checked ideas (11)
 
-Implemented, not applicable, or low value.
-
-<a id="backfill-001"></a>
+<a id="backfill-006"></a>
 <details>
-<summary><b>backfill-001</b> Backfill only to the block-request retention window — <i>implemented · high · disk, bandwidth, sync, cpu</i></summary>
+<summary><b>backfill-006</b> Run backfill only when forward sync is at head — <i>implemented · low · S · sync, bandwidth, cpu</i></summary>
 
-**Idea.** After checkpoint sync, backfill blocks (and blobs) only back to the weak subjectivity / MIN_EPOCHS_FOR_BLOCK_REQUESTS boundary instead of genesis, with full history opt-in. Older blocks are not servable on the network, so this cuts download, verification and disk.
+**Idea.** Do not start backfill workers until the node has synced to head, and pause them whenever it falls back into range sync, so backfill does not take peers, rate-limit budget, CPU and bandwidth from forward sync and duties.
 
-**Gap in Lighthouse.** 
-
-**Impact.** Already in place.
-
-**Best measured result.** stops syncing back to genesis; only about the last 5 months of blocks are downloaded (pr:lighthouse#4082)
+**Impact.** Backfill no longer competes with forward sync for peers and CPU; already in place.
 
 **Evidence (Lighthouse @ 928b61e719).**
 
-- [`beacon_node/beacon_chain/src/builder.rs:942`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/builder.rs#L942) genesis_backfill_slot defaults to a WSP-derived epoch unless --genesis-backfill
-- [`beacon_node/network/src/sync/backfill_sync/mod.rs:172`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/sync/backfill_sync/mod.rs#L172) backfill complete check vs genesis_backfill_slot
-- [`beacon_node/src/cli.rs:429`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/src/cli.rs#L429) genesis-backfill opt-in flag
+- [`beacon_node/network/src/sync/manager.rs:680`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/sync/manager.rs#L680) backfill start() only when sync_state is Synced
+- [`beacon_node/network/src/sync/manager.rs:743`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/sync/manager.rs#L743) backfill_sync.pause() and custody pause on SyncingFinalized/SyncingHead
 
-**Sources.** [lighthouse#3943](https://github.com/sigp/lighthouse/pull/3943), [lighthouse#4082](https://github.com/sigp/lighthouse/pull/4082), [grandine#94](https://github.com/grandinetech/grandine/pull/94), [nimbus#4421](https://github.com/status-im/nimbus-eth2/pull/4421), [grandine@e35b912a4](https://github.com/grandinetech/grandine/commit/e35b912a4598), [teku#6581](https://github.com/Consensys-Incorporated/teku/pull/6581)
-
-</details>
-
-<a id="backfill-003"></a>
-<details>
-<summary><b>backfill-003</b> Custody backfill fetches only custodied columns — <i>implemented · medium · bandwidth, cpu</i></summary>
-
-**Idea.** In data-column custody backfill, request only the columns the node custodies, not the full sampling set, because extra columns are verified and then discarded.
-
-**Gap in Lighthouse.** 
-
-**Impact.** Already in place.
-
-**Best measured result.** halves download for 4 of 8 columns (pr:lighthouse#8916)
-
-**Evidence (Lighthouse @ 928b61e719).**
-
-- [`beacon_node/network/src/sync/custody_backfill_sync/mod.rs:454`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/sync/custody_backfill_sync/mod.rs#L454) batch built with ByRangeRequestType::Columns(get_missing_columns_for_epoch)
-- [`beacon_node/network/src/sync/custody_backfill_sync/mod.rs:395`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/sync/custody_backfill_sync/mod.rs#L395) epochs with no missing columns are skipped
-
-**Sources.** [lighthouse#8916](https://github.com/sigp/lighthouse/pull/8916)
+**Sources.** [prysm#13623](https://github.com/OffchainLabs/prysm/pull/13623), [nimbus#3263](https://github.com/status-im/nimbus-eth2/pull/3263), [nimbus#7191](https://github.com/status-im/nimbus-eth2/pull/7191), [prysm#15702](https://github.com/OffchainLabs/prysm/pull/15702), [teku#3199](https://github.com/Consensys-Incorporated/teku/pull/3199)
 
 </details>
 
-<a id="backfill-004"></a>
-<details>
-<summary><b>backfill-004</b> Ask each peer only for its column subset — <i>implemented · medium · bandwidth</i></summary>
-
-**Idea.** When requesting data columns for custody backfill, choose peers by the requested column set and send each peer a request for only the columns it serves, instead of the full request to every peer, to avoid N-times download amplification.
-
-**Gap in Lighthouse.** 
-
-**Impact.** Already in place.
-
-**Evidence (Lighthouse @ 928b61e719).**
-
-- [`beacon_node/network/src/sync/network_context.rs:1607`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/sync/network_context.rs#L1607) custody_backfill_data_columns_batch_request builds column set from request.columns
-- [`beacon_node/network/src/sync/network_context.rs:578`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/sync/network_context.rs#L578) select_columns_by_range_peers_to_request groups columns per peer
-- [`beacon_node/network/src/sync/network_context.rs:1635`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/sync/network_context.rs#L1635) each peer gets DataColumnsByRangeRequest with only its columns
-
-**Sources.** [lighthouse#10048](https://github.com/sigp/lighthouse/pull/10048)
-
-</details>
 
 <a id="backfill-007"></a>
 <details>
 <summary><b>backfill-007</b> Batch KZG verification of backfilled columns — <i>implemented · medium · cpu, disk</i></summary>
 
 **Idea.** Verify the KZG proofs of backfilled data columns as one batch per segment instead of one at a time, which lowers CPU and storage pressure.
-
-**Gap in Lighthouse.** 
 
 **Impact.** Already in place.
 
@@ -164,13 +171,12 @@ Implemented, not applicable, or low value.
 
 </details>
 
+
 <a id="backfill-009"></a>
 <details>
 <summary><b>backfill-009</b> Dedicated low-priority thread pool for backfill — <i>implemented · medium · cpu, latency, sync</i></summary>
 
 **Idea.** Run backfill segment validation (signatures, KZG) on a separate low-priority executor or thread pool so its compute cannot contend with latency-critical block and attestation import.
-
-**Gap in Lighthouse.** 
 
 **Impact.** Already in place.
 
@@ -185,32 +191,12 @@ Implemented, not applicable, or low value.
 
 </details>
 
-<a id="backfill-006"></a>
-<details>
-<summary><b>backfill-006</b> Run backfill only when forward sync is at head — <i>implemented · low · S · sync, bandwidth, cpu</i></summary>
-
-**Idea.** Do not start backfill workers until the node has synced to head, and pause them whenever it falls back into range sync, so backfill does not take peers, rate-limit budget, CPU and bandwidth from forward sync and duties.
-
-**Gap in Lighthouse.** 
-
-**Impact.** Backfill no longer competes with forward sync for peers and CPU; already in place.
-
-**Evidence (Lighthouse @ 928b61e719).**
-
-- [`beacon_node/network/src/sync/manager.rs:680`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/sync/manager.rs#L680) backfill start() only when sync_state is Synced
-- [`beacon_node/network/src/sync/manager.rs:743`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/sync/manager.rs#L743) backfill_sync.pause() and custody pause on SyncingFinalized/SyncingHead
-
-**Sources.** [prysm#13623](https://github.com/OffchainLabs/prysm/pull/13623), [nimbus#3263](https://github.com/status-im/nimbus-eth2/pull/3263), [nimbus#7191](https://github.com/status-im/nimbus-eth2/pull/7191), [prysm#15702](https://github.com/OffchainLabs/prysm/pull/15702), [teku#3199](https://github.com/Consensys-Incorporated/teku/pull/3199)
-
-</details>
 
 <a id="backfill-011"></a>
 <details>
 <summary><b>backfill-011</b> Rate-limit backfill batch processing per slot — <i>implemented · low · S · cpu, sync, disk</i></summary>
 
 **Idea.** Queue backfill batches and release only a fixed number (e.g. one to three) at set points in each slot, so backfill throughput is throttled and does not compete with block and attestation processing.
-
-**Gap in Lighthouse.** 
 
 **Impact.** Backfill CPU is already throttled to at most three batches per slot.
 
@@ -225,13 +211,12 @@ Implemented, not applicable, or low value.
 
 </details>
 
+
 <a id="backfill-014"></a>
 <details>
 <summary><b>backfill-014</b> Cap number of buffered backfill batches — <i>implemented · low · S · cpu, bandwidth</i></summary>
 
 **Idea.** Limit the number of backfill batches buffered in flight to the forward-sync level (e.g. 5 instead of 20), so fewer heavy multi-peer column requests are created and retried.
-
-**Gap in Lighthouse.** 
 
 **Impact.** Already capped at 5 buffered batches, so fewer retried multi-peer column requests.
 
@@ -246,6 +231,31 @@ Implemented, not applicable, or low value.
 **Sources.** [lighthouse#7958](https://github.com/sigp/lighthouse/pull/7958)
 
 </details>
+
+
+<a id="backfill-018"></a>
+<details>
+<summary><b>backfill-018</b> Backfill history from era files or snapshots — <i>not · medium · L · sync, bandwidth, disk, startup</i></summary>
+
+**Idea.** Read finalized history from era files or downloadable prebuilt block snapshots and use them to backfill after checkpoint sync, instead of downloading each block from peers.
+
+**Gap in Lighthouse.** Add an era-file (or snapshot) reader that feeds historical blocks into import_historical_block_batch as a source other than peers, plus file fetch and a CLI flag. Era files carry blocks and state but not blobs or columns.
+
+**Impact.** Would replace peer download of the ~5-month backfill window (hundreds of thousands of blocks, many GB) with a file read. Saves peer bandwidth and sync time, not steady-state cost.
+
+**Best measured result.** expected to cut backfill to download time of the files; front-fill loads mainnet in about 10s (pr:nimbus#3394)
+
+**Evidence (Lighthouse @ 928b61e719).**
+
+- [`beacon_node/beacon_chain/src/historical_blocks.rs:84`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/beacon_chain/src/historical_blocks.rs#L84) import_historical_block_batch has one non-test caller: [`beacon_node/network/src/network_beacon_processor/sync_methods.rs:692`](https://github.com/sigp/lighthouse/blob/928b61e719c39f7fe8c074767b594fb99f4379bd/beacon_node/network/src/network_beacon_processor/sync_methods.rs#L692) (peer-downloaded backfill batches)
+- Cargo.lock has no era/e2store crate; a whole-word grep for era/e2store over .rs/.md/.toml finds nothing
+
+**Second check.** Checked the dependency list for any era/e2store crate and every caller of the historical import. Checkpoint sync fetches only the anchor state and block, so no non-peer history source exists.
+
+**Sources.** [nimbus#3394](https://github.com/status-im/nimbus-eth2/pull/3394), [nimbus#4283](https://github.com/status-im/nimbus-eth2/pull/4283), [caplin#8665](https://github.com/erigontech/erigon/pull/8665)
+
+</details>
+
 
 <a id="backfill-024"></a>
 <details>
@@ -268,13 +278,12 @@ Implemented, not applicable, or low value.
 
 </details>
 
+
 <a id="backfill-026"></a>
 <details>
 <summary><b>backfill-026</b> Cursor-based custody column backfiller — <i>implemented · low · S · bandwidth, sync, disk</i></summary>
 
 **Idea.** Run a dedicated, default-on custody column backfiller that works in batches from a persisted earliest-available-column-slot cursor, starts only when in sync, restarts when custody count grows, and advertises the slot to peers.
-
-**Gap in Lighthouse.** 
 
 **Impact.** Custody column backfill exists in-tree; nothing further to gain.
 
@@ -289,13 +298,12 @@ Implemented, not applicable, or low value.
 
 </details>
 
+
 <a id="backfill-034"></a>
 <details>
 <summary><b>backfill-034</b> Short pubkey cache lock in backfill signature checks — <i>implemented · low · S · latency, cpu</i></summary>
 
 **Idea.** Copy the needed proposer pubkeys out of the shared pubkey cache before backfill signature verification so the lock is held only for setup, not for verification.
-
-**Gap in Lighthouse.** 
 
 **Impact.** Lock is already held only for setup; verification runs unlocked.
 
@@ -310,4 +318,5 @@ Implemented, not applicable, or low value.
 **Sources.** [lighthouse#2716](https://github.com/sigp/lighthouse/pull/2716)
 
 </details>
+
 

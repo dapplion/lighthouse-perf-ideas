@@ -17,9 +17,11 @@ GH = {r["name"]: r["gh"] for r in REPOS}
 os.makedirs(os.path.join(out, "areas"), exist_ok=True)
 
 ideas = [json.loads(l) for l in open(os.path.join(DATA, "ideas.final.jsonl"))]
-ideas = [i for i in ideas if i.get("verdict")]
-VERDICTS = ["not", "partial", "implemented", "n/a"]
-VALUES = ["high", "medium", "low"]
+for i in ideas:
+    i["verdict"] = i.get("verdict") or "unchecked"
+    i["value"] = i.get("value") or "unrated"
+VERDICTS = ["not", "partial", "implemented", "n/a", "unchecked"]
+VALUES = ["high", "medium", "low", "unrated"]
 
 
 def measured(i):
@@ -99,36 +101,69 @@ def detail(i):
     tags = " · ".join(x for x in [i["verdict"], i["value"], i.get("effort") or "", ", ".join(i.get("resources") or [])] if x)
     B = [f'<a id="{i["cid"]}"></a>', "<details>",
          f"<summary><b>{i['cid']}</b> {html.escape(i['title'])} — <i>{html.escape(tags)}</i></summary>", "",
-         f"**Idea.** {md(i['idea'])}", "", f"**Gap in Lighthouse.** {md(i.get('gap'))}"]
+         f"**Idea.** {md(i['idea'])}"]
+    if i.get("gap"):
+        B += ["", f"**Gap in Lighthouse.** {md(i['gap'])}"]
     if i.get("impact"):
         B += ["", f"**Impact.** {md(i['impact'])}"]
     if measured(i):
         B += ["", f"**Best measured result.** {md(measured(i))}"]
     if i.get("evidence"):
         B += ["", "**Evidence (Lighthouse @ " + SHA[:10] + ").**", ""] + [f"- {md_evidence(e)}" for e in i["evidence"]]
-    if i.get("refute_note"):
-        B += ["", f"**Second check.** {md(i['refute_note'])}"]
+    for key, label in (("refute_note", "Second check"), ("skeptic_note", "Skeptic check")):
+        if i.get(key):
+            B += ["", f"**{label}.** {md(i[key])}"]
+    if len(i.get("history") or []) > 1:
+        B += ["", "**Verdict history.** " + " → ".join(f"{h['verdict']} ({h['stage']})" for h in i["history"])]
     return B + ["", f"**Sources.** {sources(i)}", "", "</details>", ""]
 
 
+def id_key(i):
+    n = i["cid"].rsplit("-", 1)[1]
+    return (n.startswith("L"), int(n.lstrip("L")))
+
+
+# GitHub stops rendering a Markdown file at about 512 KB: an area with more text continues on a second page.
+LIMIT = 380_000
+page = {}
 for a in areas:
-    g = by_area[a]
-    act = sorted((i for i in g if actionable(i)), key=lambda i: (rank[i["value"]], vrank[i["verdict"]], i["cid"]))
-    rest = sorted((i for i in g if not actionable(i)), key=lambda i: (vrank[i["verdict"]], rank[i["value"]], i["cid"]))
-    A = [f"# {a}", "", f"{len(g)} checked ideas, {len(act)} actionable. [Back to the summary](../README.md).", ""]
-    if act:
-        A += [f"## Actionable ({len(act)})", "", "High or medium value, verdict `not` or `partial`.", ""]
-        for i in act:
-            A += detail(i)
-    if rest:
-        A += [f"## Other checked ideas ({len(rest)})", "", "Implemented, not applicable, or low value.", ""]
-        for i in rest:
-            A += detail(i)
-    open(os.path.join(out, "areas", f"{a}.md"), "w").write("\n".join(A) + "\n")
+    g = sorted(by_area[a], key=id_key)
+    pages, size = [[]], 0
+    for i in g:
+        text = "\n".join(detail(i)) + "\n"
+        if pages[-1] and size + len(text) > LIMIT:
+            pages.append([])
+            size = 0
+        pages[-1].append((i, text))
+        size += len(text)
+    names = [f"{a}.md"] + [f"{a}-{k + 1}.md" for k in range(1, len(pages))]
+    for name, pg in zip(names, pages):
+        for i, _ in pg:
+            page[i["cid"]] = name
+    c = collections.Counter(i["verdict"] for i in g)
+    summary = ", ".join(f"{c[v]} {v}" for v in VERDICTS if c[v])
+    for k, (name, pg) in enumerate(zip(names, pages)):
+        A = [f"# {a}" + (f" (part {k + 1} of {len(pages)})" if len(pages) > 1 else ""), "",
+             f"{len(g)} ideas: {summary}; {sum(map(actionable, g))} actionable (high or medium value, verdict `not` or `partial`). "
+             "[Back to the summary](../README.md).", ""]
+        top = max(int(i["cid"].rsplit("-", 1)[1]) for i in g if not i["cid"].rsplit("-", 1)[1].startswith("L"))
+        listed = sum(1 for i in g if not i["cid"].rsplit("-", 1)[1].startswith("L"))
+        if listed < top:
+            A += [f"The area has {top} numbered ideas; the {top - listed} ids missing here have not been checked against Lighthouse yet.", ""]
+        if len(pages) > 1:
+            A += ["Pages: " + " · ".join(f"[part {n + 1}]({nm})" for n, nm in enumerate(names)), ""]
+        if k == 0:
+            A += ["| id | idea | verdict | value | effort | resources |", "|---|---|---|---|---|---|"]
+            for i in g:
+                star = " **★**" if actionable(i) else ""
+                A.append(f"| [{i['cid']}]({'' if page[i['cid']] == name else page[i['cid']]}#{i['cid']}){star} | {md(i['title'])} | {i['verdict']} "
+                         f"| {i['value']} | {i.get('effort') or ''} | {', '.join(i.get('resources') or [])} |")
+            A += ["", "★ actionable. Click an id for the full record.", "", "## Ideas", ""]
+        A += [t for _, t in pg]
+        open(os.path.join(out, "areas", name), "w").write("\n".join(A) + "\n")
 
 head = open(os.path.join(HERE, "repo_head.md")).read().rstrip()
-home = {i["cid"]: area(i) for i in ideas}
-head = re.sub(r"\b([a-z_]+-L?\d{3})\b", lambda m: f"[{m.group(1)}](areas/{home[m.group(1)]}.md#{m.group(1)})" if m.group(1) in home else m.group(1), head)
+head = re.sub(r"\b([a-z_]+-L?\d{3})\b", lambda m: f"[{m.group(1)}](areas/{page[m.group(1)]}#{m.group(1)})" if m.group(1) in page else m.group(1), head)
 db = sqlite3.connect(DB)
 meta = {(r, k): v for r, k, v in db.execute("select repo, key, value from meta")}
 L = [head, "", "## Data snapshot", "",
@@ -144,13 +179,13 @@ for r in REPOS:
              f"| [#{npr}](https://github.com/{r['gh']}/pull/{npr}) | {nprs:,} "
              f"| [`{head_sha[:10]}`](https://github.com/{r['gh']}/commit/{head_sha}) ({(date or '')[:10]}) | {ncommits:,} | {meta.get((n, 'last_update'), '')[:10]} |")
 L += ["", "The full registry is in `corpus/data/` (every PR and commit as JSONL) and `registry.csv` (how far each item got in the pipeline, and its idea id).", ""]
-L += ["## Totals", "", "Verdict by value:", "", "| verdict | high | medium | low | total |", "|---|---|---|---|---|"]
+L += ["## Totals", "", "Verdict by value:", "", "| verdict | high | medium | low | unrated | total |", "|---|---|---|---|---|---|"]
 for v in VERDICTS:
     row = [sum(1 for i in ideas if i["verdict"] == v and i["value"] == x) for x in VALUES]
     L.append(f"| {v} | " + " | ".join(map(str, row)) + f" | {sum(row)} |")
 L.append("| **total** | " + " | ".join(str(sum(1 for i in ideas if i["value"] == x)) for x in VALUES) + f" | {len(ideas)} |")
 L += ["", "By area, sorted by actionable count. The area is the prefix of the idea id.", "",
-      "| area | ideas | actionable | not | partial | implemented | n/a |", "|---|---|---|---|---|---|---|"]
+      "| area | ideas | actionable | not | partial | implemented | n/a | unchecked |", "|---|---|---|---|---|---|---|---|"]
 for a in areas:
     g = by_area[a]
     c = collections.Counter(i["verdict"] for i in g)

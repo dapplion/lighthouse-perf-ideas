@@ -88,49 +88,50 @@ The full registry is in `corpus/data/` (every PR and commit as JSONL) and `regis
 
 Verdict by value:
 
-| verdict | high | medium | low | total |
-|---|---|---|---|---|
-| not | 7 | 135 | 95 | 237 |
-| partial | 9 | 163 | 102 | 274 |
-| implemented | 49 | 484 | 378 | 911 |
-| n/a | 3 | 64 | 74 | 141 |
-| **total** | 68 | 846 | 649 | 1563 |
+| verdict | high | medium | low | unrated | total |
+|---|---|---|---|---|---|
+| not | 7 | 135 | 95 | 0 | 237 |
+| partial | 9 | 163 | 102 | 0 | 274 |
+| implemented | 49 | 484 | 378 | 0 | 911 |
+| n/a | 3 | 64 | 74 | 0 | 141 |
+| unchecked | 0 | 0 | 0 | 0 | 0 |
+| **total** | 68 | 846 | 649 | 0 | 1563 |
 
 By area, sorted by actionable count. The area is the prefix of the idea id.
 
-| area | ideas | actionable | not | partial | implemented | n/a |
-|---|---|---|---|---|---|---|
-| [beacon_api](areas/beacon_api.md) | 129 | 29 | 20 | 25 | 78 | 6 |
-| [data_availability](areas/data_availability.md) | 97 | 28 | 17 | 18 | 55 | 7 |
-| [gossip_validation](areas/gossip_validation.md) | 68 | 23 | 11 | 16 | 39 | 2 |
-| [block_import](areas/block_import.md) | 77 | 21 | 9 | 14 | 49 | 5 |
-| [db_cold](areas/db_cold.md) | 75 | 18 | 13 | 10 | 40 | 12 |
-| [db_hot](areas/db_hot.md) | 69 | 18 | 12 | 15 | 32 | 10 |
-| [state_cache](areas/state_cache.md) | 124 | 17 | 11 | 12 | 79 | 22 |
-| [attestation_processing](areas/attestation_processing.md) | 63 | 16 | 13 | 9 | 38 | 3 |
-| [range_sync](areas/range_sync.md) | 58 | 16 | 11 | 12 | 32 | 3 |
-| [el_interaction](areas/el_interaction.md) | 41 | 15 | 7 | 10 | 20 | 4 |
-| [gossipsub](areas/gossipsub.md) | 55 | 12 | 12 | 8 | 33 | 2 |
-| [block_production](areas/block_production.md) | 55 | 11 | 11 | 6 | 34 | 4 |
-| [rpc](areas/rpc.md) | 45 | 10 | 7 | 10 | 26 | 2 |
-| [bls](areas/bls.md) | 40 | 9 | 11 | 4 | 22 | 3 |
-| [lookup_sync](areas/lookup_sync.md) | 17 | 7 | 2 | 5 | 10 | 0 |
-| [op_pool](areas/op_pool.md) | 39 | 7 | 4 | 10 | 22 | 3 |
-| [other_caches](areas/other_caches.md) | 38 | 7 | 7 | 8 | 20 | 3 |
-| [fork_choice](areas/fork_choice.md) | 63 | 6 | 5 | 9 | 41 | 8 |
-| [tree_hash](areas/tree_hash.md) | 41 | 6 | 9 | 4 | 25 | 3 |
-| [discovery_peers](areas/discovery_peers.md) | 40 | 5 | 5 | 7 | 26 | 2 |
-| [logging_metrics](areas/logging_metrics.md) | 21 | 5 | 2 | 9 | 9 | 1 |
-| [allocator_runtime](areas/allocator_runtime.md) | 18 | 4 | 2 | 6 | 7 | 3 |
-| [kzg](areas/kzg.md) | 25 | 4 | 5 | 2 | 17 | 1 |
-| [ssz](areas/ssz.md) | 23 | 4 | 4 | 6 | 8 | 5 |
-| [validator_client](areas/validator_client.md) | 49 | 4 | 8 | 10 | 27 | 4 |
-| [backfill](areas/backfill.md) | 14 | 3 | 2 | 1 | 11 | 0 |
-| [epoch_processing](areas/epoch_processing.md) | 62 | 3 | 7 | 10 | 41 | 4 |
-| [state_transition](areas/state_transition.md) | 68 | 3 | 5 | 9 | 44 | 10 |
-| [build](areas/build.md) | 22 | 2 | 3 | 6 | 9 | 4 |
-| [other](areas/other.md) | 22 | 1 | 2 | 3 | 12 | 5 |
-| [startup](areas/startup.md) | 5 | 0 | 0 | 0 | 5 | 0 |
+| area | ideas | actionable | not | partial | implemented | n/a | unchecked |
+|---|---|---|---|---|---|---|---|
+| [beacon_api](areas/beacon_api.md) | 129 | 29 | 20 | 25 | 78 | 6 | 0 |
+| [data_availability](areas/data_availability.md) | 97 | 28 | 17 | 18 | 55 | 7 | 0 |
+| [gossip_validation](areas/gossip_validation.md) | 68 | 23 | 11 | 16 | 39 | 2 | 0 |
+| [block_import](areas/block_import.md) | 77 | 21 | 9 | 14 | 49 | 5 | 0 |
+| [db_cold](areas/db_cold.md) | 75 | 18 | 13 | 10 | 40 | 12 | 0 |
+| [db_hot](areas/db_hot.md) | 69 | 18 | 12 | 15 | 32 | 10 | 0 |
+| [state_cache](areas/state_cache.md) | 124 | 17 | 11 | 12 | 79 | 22 | 0 |
+| [attestation_processing](areas/attestation_processing.md) | 63 | 16 | 13 | 9 | 38 | 3 | 0 |
+| [range_sync](areas/range_sync.md) | 58 | 16 | 11 | 12 | 32 | 3 | 0 |
+| [el_interaction](areas/el_interaction.md) | 41 | 15 | 7 | 10 | 20 | 4 | 0 |
+| [gossipsub](areas/gossipsub.md) | 55 | 12 | 12 | 8 | 33 | 2 | 0 |
+| [block_production](areas/block_production.md) | 55 | 11 | 11 | 6 | 34 | 4 | 0 |
+| [rpc](areas/rpc.md) | 45 | 10 | 7 | 10 | 26 | 2 | 0 |
+| [bls](areas/bls.md) | 40 | 9 | 11 | 4 | 22 | 3 | 0 |
+| [lookup_sync](areas/lookup_sync.md) | 17 | 7 | 2 | 5 | 10 | 0 | 0 |
+| [op_pool](areas/op_pool.md) | 39 | 7 | 4 | 10 | 22 | 3 | 0 |
+| [other_caches](areas/other_caches.md) | 38 | 7 | 7 | 8 | 20 | 3 | 0 |
+| [fork_choice](areas/fork_choice.md) | 63 | 6 | 5 | 9 | 41 | 8 | 0 |
+| [tree_hash](areas/tree_hash.md) | 41 | 6 | 9 | 4 | 25 | 3 | 0 |
+| [discovery_peers](areas/discovery_peers.md) | 40 | 5 | 5 | 7 | 26 | 2 | 0 |
+| [logging_metrics](areas/logging_metrics.md) | 21 | 5 | 2 | 9 | 9 | 1 | 0 |
+| [allocator_runtime](areas/allocator_runtime.md) | 18 | 4 | 2 | 6 | 7 | 3 | 0 |
+| [kzg](areas/kzg.md) | 25 | 4 | 5 | 2 | 17 | 1 | 0 |
+| [ssz](areas/ssz.md) | 23 | 4 | 4 | 6 | 8 | 5 | 0 |
+| [validator_client](areas/validator_client.md) | 49 | 4 | 8 | 10 | 27 | 4 | 0 |
+| [backfill](areas/backfill.md) | 14 | 3 | 2 | 1 | 11 | 0 | 0 |
+| [epoch_processing](areas/epoch_processing.md) | 62 | 3 | 7 | 10 | 41 | 4 | 0 |
+| [state_transition](areas/state_transition.md) | 68 | 3 | 5 | 9 | 44 | 10 | 0 |
+| [build](areas/build.md) | 22 | 2 | 3 | 6 | 9 | 4 | 0 |
+| [other](areas/other.md) | 22 | 1 | 2 | 3 | 12 | 5 | 0 |
+| [startup](areas/startup.md) | 5 | 0 | 0 | 0 | 5 | 0 | 0 |
 
 Ideas by the client whose PRs or commits produced them (an idea can come from several clients):
 

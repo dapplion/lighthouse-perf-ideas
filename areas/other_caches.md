@@ -2,7 +2,7 @@
 
 38 ideas: 7 not, 8 partial, 20 implemented, 3 n/a; 7 actionable (high or medium value, verdict `not` or `partial`). [Back to the summary](../README.md).
 
-The area has 113 numbered ideas; the 75 ids missing here have not been checked against Lighthouse yet.
+Ids missing from the sequence are ideas that have not been checked against Lighthouse yet.
 
 | id | idea | verdict | value | effort | resources |
 |---|---|---|---|---|---|

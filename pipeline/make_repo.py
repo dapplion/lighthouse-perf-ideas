@@ -146,10 +146,9 @@ for a in areas:
         A = [f"# {a}" + (f" (part {k + 1} of {len(pages)})" if len(pages) > 1 else ""), "",
              f"{len(g)} ideas: {summary}; {sum(map(actionable, g))} actionable (high or medium value, verdict `not` or `partial`). "
              "[Back to the summary](../README.md).", ""]
-        top = max(int(i["cid"].rsplit("-", 1)[1]) for i in g if not i["cid"].rsplit("-", 1)[1].startswith("L"))
-        listed = sum(1 for i in g if not i["cid"].rsplit("-", 1)[1].startswith("L"))
-        if listed < top:
-            A += [f"The area has {top} numbered ideas; the {top - listed} ids missing here have not been checked against Lighthouse yet.", ""]
+        nums = [int(i["cid"].rsplit("-", 1)[1]) for i in g if not i["cid"].rsplit("-", 1)[1].startswith("L")]
+        if nums and len(nums) < max(nums):
+            A += ["Ids missing from the sequence are ideas that have not been checked against Lighthouse yet.", ""]
         if len(pages) > 1:
             A += ["Pages: " + " · ".join(f"[part {n + 1}]({nm})" for n, nm in enumerate(names)), ""]
         if k == 0:
